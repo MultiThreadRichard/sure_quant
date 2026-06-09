@@ -1,0 +1,54 @@
+# === Python 编译产物 ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+*.egg
+
+# === PyTorch / 模型相关 ===
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# === Python 虚拟环境 ===
+.venv/
+venv/
+ENV/
+env/
+.conda/
+
+# === 测试与覆盖 ===
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
+
+# === IDE / 编辑器 ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === macOS ===
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# === 日志 ===
+*.log
+logs/
+
+# === Jupyter ===
+.ipynb_checkpoints/
+
+# === 其他临时 ===
+*.tmp
+*.bak
+*.old
