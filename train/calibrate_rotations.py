@@ -46,8 +46,8 @@ from typing import Dict, List
 import torch
 from torch.optim import Adam
 
-from config.default_config import RotationQuantConfig
-from model.sure_quantizer import RotationQuantizer
+from config.default_config import SureQuantConfig
+from model.sure_quantizer import SureQuantizer
 from loss.reconstruction import reconstruction_loss
 from loss.dkoleo import DKoleoLoss
 from loss.balance import balance_loss
@@ -56,9 +56,9 @@ from loss.total_loss import build_total_loss
 
 
 def calibrate_single_layer(
-    sure_quantizer: RotationQuantizer,
+    sure_quantizer: SureQuantizer,
     sample_tensor: torch.Tensor,
-    cfg: RotationQuantConfig,
+    cfg: SureQuantConfig,
 ) -> List[Dict]:
     """Train the Givens rotation parameters on a single layer's data.
 
@@ -68,7 +68,7 @@ def calibrate_single_layer(
     deterministic inference.
 
     Args:
-        sure_quantizer: The ``RotationQuantizer`` to calibrate.
+        sure_quantizer: The ``SureQuantizer`` to calibrate.
             Must already be on the correct device.
         sample_tensor: Calibration data ``[N, D]`` on the target device.
         cfg: Training hyper‑parameters (steps, LR, loss weights, etc.).

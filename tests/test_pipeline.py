@@ -5,11 +5,11 @@ import tempfile
 
 import torch
 
-from config.default_config import RotationQuantConfig
-from model.sure_quantizer import RotationQuantizer
-from model.rotated_linear import RotatedQuantLinear
+from config.default_config import SureQuantConfig
+from model.sure_quantizer import SureQuantizer
+from model.sure_quant_linear import SureQuantLinear
 from train.calibrate_rotations import calibrate_single_layer
-from train.high_level_api import RotationQuantCalibrator
+from train.high_level_api import SureQuantCalibrator
 from export.export_rotation_params import export_sure_quantizer
 from export.checkpoint_io import load_sure_quantizer
 from loss.reconstruction import reconstruction_loss
@@ -21,8 +21,8 @@ from loss.range_loss import range_loss
 # Helper fixtures
 # ---------------------------------------------------------------------------
 
-def make_cfg(**overrides) -> RotationQuantConfig:
-    cfg = RotationQuantConfig()
+def make_cfg(**overrides) -> SureQuantConfig:
+    cfg = SureQuantConfig()
     cfg.calibration_steps = 10
     cfg.calibration_batch_size = 32
     cfg.calibration_lr = 0.01
@@ -33,7 +33,7 @@ def make_cfg(**overrides) -> RotationQuantConfig:
 
 
 # ---------------------------------------------------------------------------
-# RotationQuantizer
+# SureQuantizer
 # ---------------------------------------------------------------------------
 
 
@@ -41,7 +41,7 @@ def test_sure_quantizer_forward():
     """Full pipeline produces correct output shapes."""
     dim, block_size = 32, 8
     x = torch.randn(20, dim)
-    rq = RotationQuantizer(dim=dim, block_size=block_size, num_bits=4)
+    rq = SureQuantizer(dim=dim, block_size=block_size, num_bits=4)
     out = rq(x)
     assert out["x_hat"].shape == x.shape
     assert out["x_blk"].shape == (20, 4, 8)
@@ -56,7 +56,7 @@ def test_sure_quantizer_reconstruction_improves_with_training():
     cfg = make_cfg(calibration_steps=30, calibration_lr=0.05, lambda_dk=0.0)
     x = torch.randn(200, dim)
 
-    rq = RotationQuantizer(dim=dim, block_size=block_size, num_bits=4)
+    rq = SureQuantizer(dim=dim, block_size=block_size, num_bits=4)
     # Measure initial MSE
     with torch.no_grad():
         out = rq(x)
@@ -85,7 +85,7 @@ def test_sure_quantizer_reconstruction_improves_with_training():
 def test_export_load_roundtrip():
     """Export then load produces identical outputs."""
     dim, block_size = 64, 16
-    rq = RotationQuantizer(dim=dim, block_size=block_size, num_bits=4)
+    rq = SureQuantizer(dim=dim, block_size=block_size, num_bits=4)
     rq.rotation.givens.theta.data = torch.randn_like(rq.rotation.givens.theta) * 0.1
 
     # Calibrate briefly so theta is non‑zero
@@ -110,17 +110,17 @@ def test_export_load_roundtrip():
 
 
 # ---------------------------------------------------------------------------
-# RotatedQuantLinear
+# SureQuantLinear
 # ---------------------------------------------------------------------------
 
 
-def test_rotated_quant_linear():
+def test_sure_quant_linear():
     """Inference wrapper produces correct output shape."""
     dim, out_dim = 32, 16
     linear = torch.nn.Linear(dim, out_dim)
-    rq = RotationQuantizer(dim=dim, block_size=8, num_bits=4)
+    rq = SureQuantizer(dim=dim, block_size=8, num_bits=4)
 
-    wrapped = RotatedQuantLinear(linear, rq)
+    wrapped = SureQuantLinear(linear, rq)
     x = torch.randn(5, 7, dim)  # extra leading dims
     y = wrapped(x)
     assert y.shape == (5, 7, out_dim)
@@ -135,7 +135,7 @@ def test_calibrator_api():
     """Full calibrator workflow."""
     model = torch.nn.Linear(32, 16)
     cfg = make_cfg(calibration_steps=5, block_size=8)
-    calibrator = RotationQuantCalibrator(model, cfg)
+    calibrator = SureQuantCalibrator(model, cfg)    
 
     layer_name = "test_layer"
     x = torch.randn(100, 32)
@@ -182,7 +182,7 @@ def test_range_loss():
 
 def test_config_defaults():
     """Default config is instantiable."""
-    cfg = RotationQuantConfig()
+    cfg = SureQuantConfig()
     assert cfg.block_size == 16
     assert cfg.num_bits == 4
     assert cfg.lambda_rec == 1.0

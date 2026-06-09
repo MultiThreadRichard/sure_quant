@@ -1,4 +1,4 @@
-"""High‑level calibrator API for rotation quantisation.
+"""High‑level calibrator API for sure quantisation.
 
 Provides a single entry point that manages sample collection, quantizer
 construction, calibration training, and parameter export.
@@ -9,18 +9,18 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 
-from config.default_config import RotationQuantConfig
-from model.sure_quantizer import RotationQuantizer
+from config.default_config import SureQuantConfig
+from model.sure_quantizer import SureQuantizer
 from train.calibrate_rotations import calibrate_single_layer
 from export.export_rotation_params import export_sure_quantizer
 
 
-class RotationQuantCalibrator:
-    """Unified calibrator for rotation quantisation.
+class SureQuantCalibrator:
+    """Unified calibrator for sure quantisation.
 
     Typical usage::
 
-        calibrator = RotationQuantCalibrator(model, cfg)
+        calibrator = SureQuantCalibrator(model, cfg)
         calibrator.collect_samples_for_layer("layer.0", tensor)
         calibrator.build_quantizer_for_layer("layer.0", dim=4096)
         calibrator.calibrate_layer("layer.0")
@@ -29,14 +29,14 @@ class RotationQuantCalibrator:
     Args:
         model: The model whose layers will be quantised (used for hook
             registration; sample collection is manual in v1).
-        cfg: ``RotationQuantConfig`` instance.
+        cfg: ``SureQuantConfig`` instance.      
     """
 
-    def __init__(self, model: nn.Module, cfg: RotationQuantConfig):
+    def __init__(self, model: nn.Module, cfg: SureQuantConfig):     
         self.model = model
         self.cfg = cfg
         self.layer_samples: Dict[str, torch.Tensor] = {}
-        self.layer_quantizers: Dict[str, RotationQuantizer] = {}
+        self.layer_quantizers: Dict[str, SureQuantizer] = {}
 
     # ------------------------------------------------------------------
     # Sample management
@@ -59,17 +59,17 @@ class RotationQuantCalibrator:
 
     def build_quantizer_for_layer(
         self, layer_name: str, dim: int
-    ) -> RotationQuantizer:
-        """Create a ``RotationQuantizer`` for a layer and register it.
+    ) -> SureQuantizer:
+        """Create a ``SureQuantizer`` for a layer and register it.
 
         Args:
             layer_name: Unique name for the layer.
             dim: Input dimension ``D``.
 
         Returns:
-            The new ``RotationQuantizer`` instance.
+            The new ``SureQuantizer`` instance.
         """
-        rq = RotationQuantizer(
+        rq = SureQuantizer(
             dim=dim,
             block_size=self.cfg.block_size,
             num_bits=self.cfg.num_bits,

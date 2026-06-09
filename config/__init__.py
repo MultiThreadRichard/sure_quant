@@ -1,3 +1,3 @@
-from .default_config import RotationQuantConfig
+from .default_config import SureQuantConfig
 
-__all__ = ["RotationQuantConfig"]
+__all__ = ["SureQuantConfig"]   

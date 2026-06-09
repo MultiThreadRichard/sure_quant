@@ -1,9 +1,9 @@
 from .wrappers import CompositeBlockRotation
-from .sure_quantizer import RotationQuantizer
-from .rotated_linear import RotatedQuantLinear
+from .sure_quantizer import SureQuantizer
+from .sure_quant_linear import SureQuantLinear
 
 __all__ = [
     "CompositeBlockRotation",
-    "RotationQuantizer",
-    "RotatedQuantLinear",
+    "SureQuantizer",
+    "SureQuantLinear",
 ]

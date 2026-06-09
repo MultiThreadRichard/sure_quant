@@ -5,8 +5,8 @@ from typing import Tuple
 
 
 @dataclass
-class RotationQuantConfig:
-    """Central configuration for the rotation quantization framework.
+class SureQuantConfig:
+    """Central configuration for the sure quantization framework.
 
     Recommended defaults for first release:
         block_size=16, num_bits=4, num_givens_layers=2, lambda_dk=0.05.

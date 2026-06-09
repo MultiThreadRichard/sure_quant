@@ -1,12 +1,7 @@
-"""High‑level Rotation Quantizer that chains blockify → rotate → quantise → inverse.
+"""High‑level Sure Quantizer that chains blockify → rotate → quantise → inverse.
 
 This is the central module that calibrators train and inference wrappers consume.
-
---------------------------------------------------------------------
-Pipeline overview
-
-The SureQuantizer encapsulates the full round‑trip:
-
+      
     x [N, D]                              ← original vectors (float32)
       │
       ▼ blockify(dim=D, block_size=g)
@@ -46,6 +41,7 @@ This separation is analogous to a frozen pre‑trained backbone followed
 by a small learnable adapter: the Hadamard does the heavy lifting and
 the Givens fine‑tunes.  Because each Givens pair only costs O(1), the
 learnable component adds negligible overhead during inference.
+
 --------------------------------------------------------------------
 Module hierarchy
 
@@ -59,11 +55,11 @@ SureQuantizer
 import torch
 import torch.nn as nn
 
-from ops.block_ops import blockify, deblockify
-from ops.hadamard import BlockHadamardTransform
-from ops.givens import BlockGivensRotation
-from model.wrappers import CompositeBlockRotation
-from quant.fake_quant import BlockUniformQuantizer
+from sure_quant.ops.block_ops import blockify, deblockify
+from sure_quant.ops.hadamard import BlockHadamardTransform
+from sure_quant.ops.givens import BlockGivensRotation
+from sure_quant.model.wrappers import CompositeBlockRotation
+from sure_quant.quant.fake_quant import BlockUniformQuantizer
 
 
 class SureQuantizer(nn.Module):

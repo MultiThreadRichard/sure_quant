@@ -2,10 +2,10 @@
 
 import torch
 
-from model.sure_quantizer import RotationQuantizer
+from model.sure_quantizer import SureQuantizer
 
 
-def export_sure_quantizer(sure_quantizer: RotationQuantizer, path: str):
+def export_sure_quantizer(sure_quantizer: SureQuantizer, path: str):
     """Save all quantizer state needed for deployment to a .pt file.
 
     The saved dict contains:
@@ -16,7 +16,7 @@ def export_sure_quantizer(sure_quantizer: RotationQuantizer, path: str):
         - ``pairs`` – Givens coordinate pair topology.
 
     Args:
-        sure_quantizer: A trained ``RotationQuantizer`` instance.
+        sure_quantizer: A trained ``SureQuantizer`` instance.
         path: Output file path (e.g. ``"layer_quant.pt"``).
     """
     obj = {

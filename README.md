@@ -35,7 +35,7 @@ sure_quant/
 │   └── givens.py             # 可学习 Givens 旋转
 ├── model/                    # 模型组件
 │   ├── wrappers.py           # CompositeBlockRotation（组合旋转）
-│   ├── sure_quantizer.py     # RotationQuantizer（完整量化器）
+│   ├── sure_quantizer.py     # SureQuantizer（完整量化器）
 │   └── rotated_linear.py     # RotatedQuantLinear（用于替换 nn.Linear）
 ├── quant/                    # 量化器
 │   └── fake_quant.py         # BlockUniformQuantizer（STE 均匀量化）
@@ -104,15 +104,15 @@ python -m sure_quant.scripts.run_single_layer_calibration \
 ```python
 import torch
 from sure_quant.config.default_config import RotationQuantConfig
-from sure_quant.model.sure_quantizer import RotationQuantizer
+from sure_quant.model.sure_quantizer import SureQuantizer
 from sure_quant.train.calibrate_rotations import calibrate_single_layer
 from sure_quant.train.high_level_api import RotationQuantCalibrator
 from sure_quant.export.export_rotation_params import export_sure_quantizer
 from sure_quant.export.checkpoint_io import load_sure_quantizer
 
-# ------ 方式一：直接使用 RotationQuantizer ------
+# ------ 方式一：直接使用 SureQuantizer ------
 cfg = RotationQuantConfig()
-rq = RotationQuantizer(
+rq = SureQuantizer(
     dim=4096,
     block_size=cfg.block_size,      # 16
     num_bits=cfg.num_bits,          # 4
