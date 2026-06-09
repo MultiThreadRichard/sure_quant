@@ -1,4 +1,4 @@
-"""High‑level calibrator API for sure quantisation.
+"""High‑level calibrator API for sure quantization.
 
 Provides a single entry point that manages sample collection, quantizer
 construction, calibration training, and parameter export.
@@ -16,7 +16,7 @@ from export.export_rotation_params import export_sure_quantizer
 
 
 class SureQuantCalibrator:
-    """Unified calibrator for sure quantisation.
+    """Unified calibrator for sure quantization.
 
     Typical usage::
 

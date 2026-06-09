@@ -110,11 +110,11 @@ class SureQuantizer(nn.Module):
         Returns:
             Dict with intermediate and final tensors:
                 - ``x_blk``: ``[N, M, g]`` — blockified input.
-                - ``z``: ``[N, M, g]`` — rotated, before quantisation.
-                - ``z_hat``: ``[N, M, g]`` — after fake quantisation.
+                - ``z``: ``[N, M, g]`` — rotated, before quantization.
+                - ``z_hat``: ``[N, M, g]`` — after fake quantization.
                 - ``x_hat_blk``: ``[N, M, g]`` — reconstructed blocks.
                 - ``x_hat``: ``[N, D]`` — reconstructed flat vectors.
-                - ``scale``: ``[M]`` — per‑block quantisation scale.
+                - ``scale``: ``[M]`` — per‑block quantization scale.
         """
         if x.dim() != 2 or x.shape[1] != self.dim:
             raise ValueError(

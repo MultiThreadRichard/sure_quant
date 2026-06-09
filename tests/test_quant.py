@@ -16,7 +16,7 @@ def test_quant_shape():
 
 
 def test_quant_identity_8bit():
-    """With 8-bit quantisation, per‑element max absolute error is small.
+    """With 8-bit quantization, per‑element max absolute error is small.
 
     We test on data with a moderate range (centered around 0, small variance)
     to avoid the per‑block absmax scale dominating small values near zero.

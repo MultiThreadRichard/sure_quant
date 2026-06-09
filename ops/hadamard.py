@@ -12,7 +12,7 @@ Before rotation, coordinates of real neural‑network activations and weights
 often have heavy‑tailed or structured distributions that are hard to quantise
 with a uniform scalar quantiser.  Applying a random orthogonal transform
 (mixing all coordinates) makes the marginal distribution of each coordinate
-converge to a Gaussian — the ideal input for Lloyd‑Max / uniform quantisation.
+converge to a Gaussian — the ideal input for Lloyd‑Max / uniform quantization.
 
 A dense random rotation costs O(d²) per vector, which is prohibitive for
 large models.  The Hadamard transform is a fast structured alternative:

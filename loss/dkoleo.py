@@ -27,11 +27,11 @@ equivalent to maximising the nearest‑neighbour distance, which spreads
 points uniformly over the sphere.
 
 --------------------------------------------------------------------
-Why DKoleo for rotation quantisation?
+Why DKoleo for rotation quantization?
 
 After rotation, we want the coordinates within each block to be:
 
-  1. Gaussian‑distributed (for optimal uniform quantisation).
+  1. Gaussian‑distributed (for optimal uniform quantization).
   2. Well‑spread — no two vectors should be too similar, otherwise the
      quantiser wastes representable levels on redundant patterns.
 
@@ -43,7 +43,7 @@ which only cares about fidelity after the full round‑trip.
 Why per‑block?
 
 We compute DKoleo independently per block because each block has its
-own quantisation scale.  Within a block, vectors should be uniformly
+own quantization scale.  Within a block, vectors should be uniformly
 spread; across blocks, different energy levels are fine because each
 block gets its own scale.
 

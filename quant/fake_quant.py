@@ -1,11 +1,11 @@
 """Block‑wise symmetric uniform fake quantizer with STE.
 
 --------------------------------------------------------------------
-Why fake quantisation?
+Why fake quantization?
 
-During calibration training we need to simulate the effect of quantisation
+During calibration training we need to simulate the effect of quantization
 on the forward pass while keeping gradients flowing to the learnable
-rotation parameters.  "Fake" quantisation means:
+rotation parameters.  "Fake" quantization means:
 
   - Forward: actual rounding + clamping to integer grid (simulates int8/int4).
   - Backward: identity gradient (Straight‑Through Estimator, STE).
@@ -18,12 +18,12 @@ Why per‑block (not per‑tensor) scale?
 A single scale factor for the entire tensor [N, M, g] would be dominated
 by the block with the largest magnitude, causing other blocks to be
 quantised very coarsely.  Using one scale per block (dimension M) allows
-each block to adapt its quantisation range independently.
+each block to adapt its quantization range independently.
 
 --------------------------------------------------------------------
-Why symmetric (not affine) quantisation?
+Why symmetric (not affine) quantization?
 
-Symmetric quantisation has zero as a representable value and uses equal
+Symmetric quantization has zero as a representable value and uses equal
 numbers of positive and negative levels.  After Hadamard + Givens rotation,
 the coordinate distribution is roughly zero‑mean and symmetric, so a
 symmetric grid is near‑optimal and uses fewer bits than affine (no zero‑point
@@ -36,7 +36,7 @@ giving 2^b levels total (e.g. b=4 → 16 levels from −8 to +7).
 --------------------------------------------------------------------
 Straight‑Through Estimator (STE) detail:
 
-    z_q = round(z / scale) * scale          ← forward: hard quantisation
+    z_q = round(z / scale) * scale          ← forward: hard quantization
     z_hat = z + (z_q − z).detach()          ← backward: ∂z_hat/∂z = I
 
 The .detach() on (z_q − z) means this difference is treated as a constant
@@ -52,7 +52,7 @@ class BlockUniformQuantizer(nn.Module):
     """Symmetric per‑block uniform fake quantizer.
 
     Args:
-        num_bits: Number of bits for quantisation (e.g. 4 → 16 levels).
+        num_bits: Number of bits for quantization (e.g. 4 → 16 levels).
         eps: Small constant for numerical stability of scale.
     """
 

@@ -6,13 +6,13 @@ matrix and the quantiser are frozen.
 --------------------------------------------------------------------
 Training strategy
 
-We use *post‑training quantisation with learnable rotation* (PTQ‑LR):
+We use *post‑training quantization with learnable rotation* (PTQ‑LR):
 
   1. Collect a representative sample of the target layer's activations
      (or weights) by running the model on calibration data.
   2. Freeze the base model and the Hadamard signs.
   3. Train only the Givens rotation angles θ to minimise a composite
-     loss that balances reconstruction fidelity (MSE) with quantisation
+     loss that balances reconstruction fidelity (MSE) with quantization
      friendliness (DKoleo + balance + range).
 
 This is efficient because:
@@ -31,7 +31,7 @@ Loss function breakdown
     uniformly on the unit sphere.
   - **Balance**: penalises variance imbalance across coordinates within
     a block.  If some coordinates have much higher variance than others,
-    the common quantisation scale loses precision on low‑variance dims.
+    the common quantization scale loses precision on low‑variance dims.
   - **Range**: penalises large max‑to‑mean ratio across blocks, so no
     single block dominates the scale and wastes bits.
 
@@ -105,7 +105,7 @@ def calibrate_single_layer(
         else:
             x = sample_tensor
 
-        # --- Forward pass through the full quantisation pipeline ---
+        # --- Forward pass through the full quantization pipeline ---
         # out["x_blk"]: original in block form        [B, M, g]
         # out["z"]:     rotated (pre‑quant)            [B, M, g]
         # out["x_hat_blk"]: reconstructed blocks       [B, M, g]

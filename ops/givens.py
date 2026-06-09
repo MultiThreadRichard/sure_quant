@@ -18,7 +18,7 @@ Key properties:
   - Applying G only modifies two coordinates → O(1) cost per pair.
 
 --------------------------------------------------------------------
-Why Givens rotations for quantisation?
+Why Givens rotations for quantization?
 
 After the Hadamard pre‑rotation, the block coordinates are roughly
 Gaussian, but may still have residual structure or unfavourable
@@ -27,7 +27,7 @@ energy distribution.  A composition of Givens rotations can:
   1. Further mix coordinates to make energy more uniform (helps the
      per‑block uniform quantiser, which uses a single scale per block).
   2. Align the coordinate axes with the principal directions of the
-     data distribution (improves quantisation SNR).
+     data distribution (improves quantization SNR).
   3. Be learned via gradient descent — only the angles θ are optimised,
      keeping the rotation orthogonal by construction.
 
@@ -133,7 +133,7 @@ class BlockGivensRotation(nn.Module):
 
         # Initialise all angles to zero → initial rotation = identity.
         # This ensures that training starts from a known good point where
-        # quantisation quality is already reasonable (from Hadamard alone).
+        # quantization quality is already reasonable (from Hadamard alone).
         theta = torch.zeros(num_blocks, self.num_pairs, dtype=torch.float32)
         self.theta = nn.Parameter(theta)
 

@@ -1,4 +1,4 @@
-"""MSE reconstruction loss for rotation quantisation."""
+"""MSE reconstruction loss for rotation quantization."""
 
 import torch
 

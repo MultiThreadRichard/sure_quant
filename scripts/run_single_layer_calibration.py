@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single‑layer rotation quantisation calibration script.
+"""Single‑layer rotation quantization calibration script.
 
 Usage::
 
@@ -12,14 +12,14 @@ import argparse
 
 import torch
 
-from sure_quant.config.default_config import RotationQuantConfig
-from sure_quant.model.sure_quantizer import RotationQuantizer
-from sure_quant.train.calibrate_rotations import calibrate_single_layer
-from sure_quant.export.export_rotation_params import export_sure_quantizer
+from config.default_config import SureQuantConfig
+from model.sure_quantizer import SureQuantizer
+from train.calibrate_rotations import calibrate_single_layer
+from export.export_rotation_params import export_sure_quantizer
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Calibrate a single‑layer rotation quantizer")
+    p = argparse.ArgumentParser(description="Calibrate a single‑layer sure quantizer")  
     p.add_argument("--dim", type=int, default=4096, help="Input dimension D")
     p.add_argument("--block-size", type=int, default=16, help="Block size g")
     p.add_argument("--num-bits", type=int, default=4, help="Quantisation bits")
@@ -38,7 +38,7 @@ def main():
     torch.manual_seed(args.seed)
 
     # Build config
-    cfg = RotationQuantConfig()
+    cfg = SureQuantConfig()
     cfg.block_size = args.block_size
     cfg.num_bits = args.num_bits
     cfg.calibration_steps = args.steps
@@ -56,7 +56,7 @@ def main():
     x = torch.randn(args.n_samples, args.dim, device=cfg.device)
 
     # Build quantizer
-    rq = RotationQuantizer(
+    rq = SureQuantizer(
         dim=args.dim,
         block_size=cfg.block_size,
         num_bits=cfg.num_bits,

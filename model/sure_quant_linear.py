@@ -1,4 +1,4 @@
-"""Inference‑time wrapper that applies rotation quantisation before a nn.Linear.
+"""Inference‑time wrapper that applies rotation quantization before a nn.Linear.
 
 Wraps a linear layer so its input is first quantised through the rotation
 pipeline, then passed to the original linear layer.
@@ -11,7 +11,7 @@ from model.sure_quantizer import SureQuantizer
 
 
 class SureQuantLinear(nn.Module):
-    """Linear layer preceded by sure quantisation of its input.
+    """Linear layer preceded by sure quantization of its input.
 
     Args:
         linear: Original ``nn.Linear`` layer.
@@ -29,7 +29,7 @@ class SureQuantLinear(nn.Module):
         self.sure_quantizer = sure_quantizer
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply rotation quantisation, then the linear layer.
+        """Apply rotation quantization, then the linear layer.
 
         Args:
             x: Input tensor of shape ``[..., D]``.

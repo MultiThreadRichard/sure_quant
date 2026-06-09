@@ -6,7 +6,7 @@ import torch
 def balance_loss(z: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Penalise variance imbalance across coordinates within a block.
 
-    If some coordinates show much higher variance than others, quantisation
+    If some coordinates show much higher variance than others, quantization
     quality degrades because the common scale cannot capture both.
 
     Args:

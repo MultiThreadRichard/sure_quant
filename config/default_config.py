@@ -14,7 +14,7 @@ class SureQuantConfig:
         loss converges, then gradually re‑enable DKoleo.
     """
 
-    # --- Block & quantisation ---
+    # --- Block & quantization ---
     block_size: int = 16
     num_bits: int = 4
 
