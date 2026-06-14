@@ -3,6 +3,7 @@ from .dkoleo import DKoleoLoss
 from .balance import balance_loss
 from .range_loss import range_loss
 from .total_loss import build_total_loss
+from .joint_objective import JointObjective
 
 __all__ = [
     "reconstruction_loss",
@@ -10,4 +11,5 @@ __all__ = [
     "balance_loss",
     "range_loss",
     "build_total_loss",
+    "JointObjective",
 ]
