@@ -1,7 +1,7 @@
-"""Stiefel-constrained calibration training loop.
+"""Stiefel-constrained calibration via Householder parameterization.
 
 This module implements a standalone training loop that optimizes block-wise
-rotation matrices on the Stiefel manifold using the joint objective:
+orthogonal transforms with k Householder reflectors using the joint objective:
 
     L = lambda_q * L_q + lambda_d * L_d + lambda_b * L_b
 
@@ -19,7 +19,11 @@ from config.default_config import SureQuantConfig
 from loss.joint_objective import JointObjective
 from ops.block_ops import blockify
 from quant.fake_quant import BlockUniformQuantizer
-from train.stiefel_optimizer import StiefelOptimizer
+from train.stiefel_optimizer import (
+    StiefelOptimizer,
+    apply_householder_batch,
+    reflectors_to_rotation_matrix,
+)
 
 
 def calibrate_stiefel(
@@ -35,6 +39,7 @@ def calibrate_stiefel(
     Returns:
         Dict containing:
             - ``rotations``: learned block rotations ``[M, g, g]``
+            - ``reflectors``: learned Householder reflectors ``[M, k, g]``
             - ``logs``: per-step training logs
     """
     if sample_tensor.dim() != 2:
@@ -48,10 +53,12 @@ def calibrate_stiefel(
         raise ValueError(f"D={d} must be divisible by block_size={g}")
 
     m = d // g
+    k = int(getattr(cfg, "stiefel_num_reflectors", g))
+    if k <= 0:
+        raise ValueError(f"stiefel_num_reflectors must be positive, got {k}")
 
-    # Block-wise rotations, each block starts from identity.
-    R = torch.eye(g, device=device, dtype=x_all.dtype).unsqueeze(0).repeat(m, 1, 1)
-    R = R.requires_grad_(True)
+    # Block-wise Householder reflectors [M, k, g].
+    V = torch.randn(m, k, g, device=device, dtype=x_all.dtype).requires_grad_(True)
 
     stiefel_opt = StiefelOptimizer(lr=cfg.calibration_lr)
     objective = JointObjective(
@@ -72,7 +79,7 @@ def calibrate_stiefel(
             x = x_all
 
         xb = blockify(x, g)  # [B, M, g]
-        z = torch.einsum("bmg,mgk->bmk", xb, R)
+        z = apply_householder_batch(xb, V)
         qz, _ = quantizer(z)
 
         loss_info = objective.compute(z, qz)
@@ -81,14 +88,14 @@ def calibrate_stiefel(
         loss_d = loss_info["loss_d"]
         loss_b = loss_info["loss_b"]
 
-        if R.grad is not None:
-            R.grad.zero_()
+        if V.grad is not None:
+            V.grad.zero_()
         loss.backward()
 
         with torch.no_grad():
-            R_new = stiefel_opt.step(R, R.grad)
-            R.copy_(R_new)
-            R.grad.zero_()
+            V_new = stiefel_opt.step(V, V.grad)
+            V.copy_(V_new)
+            V.grad.zero_()
 
         logs.append(
             {
@@ -109,7 +116,11 @@ def calibrate_stiefel(
                 f"loss_b={loss_b.item():.6f}"
             )
 
+    with torch.no_grad():
+        rotations = reflectors_to_rotation_matrix(V)
+
     return {
-        "rotations": R.detach(),
+        "rotations": rotations.detach(),
+        "reflectors": V.detach(),
         "logs": logs,
     }

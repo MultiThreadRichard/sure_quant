@@ -2,34 +2,40 @@
 
 import torch
 
-from train.stiefel_optimizer import StiefelOptimizer
+from train.stiefel_optimizer import (
+    StiefelOptimizer,
+    apply_householder_batch,
+    reflectors_to_rotation_matrix,
+)
 from loss.joint_objective import JointObjective
 
 
-def test_stiefel_optimizer_keeps_orthonormal_columns():
-    n, p = 16, 8
-    R0, _ = torch.linalg.qr(torch.randn(n, p), mode="reduced")
-    grad = torch.randn(n, p)
+def test_stiefel_optimizer_updates_reflectors_shape():
+    m, k, g = 4, 6, 8
+    V0 = torch.randn(m, k, g)
+    grad = torch.randn(m, k, g)
 
     opt = StiefelOptimizer(lr=1e-2)
-    R1 = opt.step(R0, grad)
+    V1 = opt.step(V0, grad)
 
-    eye = torch.eye(p)
-    assert R1.shape == (n, p)
-    assert torch.allclose(R1.T @ R1, eye, atol=1e-5)
+    assert V1.shape == (m, k, g)
+    assert not torch.allclose(V0, V1)
 
 
-def test_stiefel_optimizer_supports_batch_input():
-    b, n, p = 4, 12, 6
-    R0, _ = torch.linalg.qr(torch.randn(b, n, p), mode="reduced")
-    grad = torch.randn(b, n, p)
+def test_householder_rotation_is_orthogonal_and_matches_batch_apply():
+    b, m, k, g = 5, 3, 4, 8
+    x = torch.randn(b, m, g)
+    V = torch.randn(m, k, g)
 
-    opt = StiefelOptimizer(lr=5e-3)
-    R1 = opt.step(R0, grad)
+    y1 = apply_householder_batch(x, V)
+    R = reflectors_to_rotation_matrix(V)
+    y2 = torch.einsum("bmg,mgk->bmk", x, R)
 
-    eye = torch.eye(p).expand(b, p, p)
-    gram = torch.matmul(R1.transpose(-1, -2), R1)
+    gram = torch.matmul(R.transpose(-1, -2), R)
+    eye = torch.eye(g).unsqueeze(0).expand_as(gram)
+
     assert torch.allclose(gram, eye, atol=1e-5)
+    assert torch.allclose(y1, y2, atol=1e-5)
 
 
 def test_joint_objective_runs_and_has_gradient():

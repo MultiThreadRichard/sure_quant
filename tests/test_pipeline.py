@@ -389,3 +389,132 @@ def test_stiefel_has_significant_advantage_over_rotation_by_kl():
     assert torch.isfinite(torch.tensor(rotation_mean)).item()
     assert torch.isfinite(torch.tensor(stiefel_mean)).item()
     assert torch.isfinite(torch.tensor(improve_kl_percent)).item()
+
+
+def _eval_rotation_metrics_with_cfg(x: torch.Tensor, cfg: SureQuantConfig) -> tuple[float, float]:
+    rq = SureQuantizer(dim=x.shape[1], block_size=cfg.block_size, num_bits=cfg.num_bits)
+    calibrate_single_layer(rq, x, cfg)
+    with torch.no_grad():
+        out = rq(x)
+        mse = float(((out["z"] - out["z_hat"]) ** 2).mean().item())
+        kl = float(_hist_kl_divergence(out["z"], out["z_hat"]).item())
+    return mse, kl
+
+
+def _eval_stiefel_metrics_with_cfg(x: torch.Tensor, cfg: SureQuantConfig) -> tuple[float, float]:
+    stiefel_out = calibrate_stiefel(x, cfg)
+    R = stiefel_out["rotations"]
+    quantizer = BlockUniformQuantizer(cfg.num_bits)
+    with torch.no_grad():
+        xb = blockify(x, cfg.block_size)
+        z = torch.einsum("bmg,mgk->bmk", xb, R)
+        qz, _ = quantizer(z)
+        mse = float(((z - qz) ** 2).mean().item())
+        kl = float(_hist_kl_divergence(z, qz).item())
+    return mse, kl
+
+
+def test_auto_grid_tuning_for_stiefel_and_rotation_and_compare():
+    """Auto grid-tune rotation and stiefel separately, then compare best MSE and KL."""
+    seeds = [0, 1, 2]
+
+    base = make_cfg(
+        block_size=8,
+        num_bits=4,
+        calibration_batch_size=64,
+        lambda_dk=0.0,
+        lambda_bal=0.0,
+        lambda_range=0.0,
+        dk_sample_size=64,
+    )
+
+    rotation_grid = [
+        {"calibration_steps": 10, "calibration_lr": 0.01},
+        {"calibration_steps": 10, "calibration_lr": 0.03},
+        {"calibration_steps": 20, "calibration_lr": 0.01},
+        {"calibration_steps": 20, "calibration_lr": 0.03},
+    ]
+    stiefel_grid = [
+        {"calibration_steps": 10, "calibration_lr": 0.01, "stiefel_num_reflectors": 4},
+        {"calibration_steps": 10, "calibration_lr": 0.03, "stiefel_num_reflectors": 4},
+        {"calibration_steps": 20, "calibration_lr": 0.01, "stiefel_num_reflectors": 4},
+        {"calibration_steps": 20, "calibration_lr": 0.03, "stiefel_num_reflectors": 4},
+        {"calibration_steps": 10, "calibration_lr": 0.01, "stiefel_num_reflectors": 8},
+        {"calibration_steps": 10, "calibration_lr": 0.03, "stiefel_num_reflectors": 8},
+        {"calibration_steps": 20, "calibration_lr": 0.01, "stiefel_num_reflectors": 8},
+        {"calibration_steps": 20, "calibration_lr": 0.03, "stiefel_num_reflectors": 8},
+    ]
+
+    rotation_best_mse = float("inf")
+    rotation_best_mse_cfg = None
+    rotation_best_kl = float("inf")
+    rotation_best_kl_cfg = None
+    for hp in rotation_grid:
+        mses = []
+        kls = []
+        for seed in seeds:
+            torch.manual_seed(seed)
+            x = torch.randn(192, 32)
+            cfg = make_cfg(**base.__dict__)
+            cfg.calibration_steps = hp["calibration_steps"]
+            cfg.calibration_lr = hp["calibration_lr"]
+            mse, kl = _eval_rotation_metrics_with_cfg(x, cfg)
+            mses.append(mse)
+            kls.append(kl)
+        mean_mse = sum(mses) / len(mses)
+        mean_kl = sum(kls) / len(kls)
+        if mean_mse < rotation_best_mse:
+            rotation_best_mse = mean_mse
+            rotation_best_mse_cfg = hp
+        if mean_kl < rotation_best_kl:
+            rotation_best_kl = mean_kl
+            rotation_best_kl_cfg = hp
+
+    stiefel_best_mse = float("inf")
+    stiefel_best_mse_cfg = None
+    stiefel_best_kl = float("inf")
+    stiefel_best_kl_cfg = None
+    for hp in stiefel_grid:
+        mses = []
+        kls = []
+        for seed in seeds:
+            torch.manual_seed(seed)
+            x = torch.randn(192, 32)
+            cfg = make_cfg(**base.__dict__)
+            cfg.calibration_steps = hp["calibration_steps"]
+            cfg.calibration_lr = hp["calibration_lr"]
+            cfg.stiefel_num_reflectors = hp["stiefel_num_reflectors"]
+            mse, kl = _eval_stiefel_metrics_with_cfg(x, cfg)
+            mses.append(mse)
+            kls.append(kl)
+        mean_mse = sum(mses) / len(mses)
+        mean_kl = sum(kls) / len(kls)
+        if mean_mse < stiefel_best_mse:
+            stiefel_best_mse = mean_mse
+            stiefel_best_mse_cfg = hp
+        if mean_kl < stiefel_best_kl:
+            stiefel_best_kl = mean_kl
+            stiefel_best_kl_cfg = hp
+
+    improve_mse_percent = (rotation_best_mse - stiefel_best_mse) / max(rotation_best_mse, 1e-12) * 100.0
+    improve_kl_percent = (rotation_best_kl - stiefel_best_kl) / max(rotation_best_kl, 1e-12) * 100.0
+
+    better_mse = "stiefel" if stiefel_best_mse < rotation_best_mse else "rotation"
+    better_kl = "stiefel" if stiefel_best_kl < rotation_best_kl else "rotation"
+
+    print(f"rotation_best_mse={rotation_best_mse:.6f}, best_cfg={rotation_best_mse_cfg}")
+    print(f"stiefel_best_mse={stiefel_best_mse:.6f}, best_cfg={stiefel_best_mse_cfg}")
+    print(f"stiefel_improve_percent_over_rotation_mse={improve_mse_percent:.2f}%")
+    print(f"better_scheme_after_grid_mse={better_mse}")
+
+    print(f"rotation_best_kl={rotation_best_kl:.6f}, best_cfg={rotation_best_kl_cfg}")
+    print(f"stiefel_best_kl={stiefel_best_kl:.6f}, best_cfg={stiefel_best_kl_cfg}")
+    print(f"stiefel_improve_percent_over_rotation_kl={improve_kl_percent:.2f}%")
+    print(f"better_scheme_after_grid_kl={better_kl}")
+
+    assert torch.isfinite(torch.tensor(rotation_best_mse)).item()
+    assert torch.isfinite(torch.tensor(stiefel_best_mse)).item()
+    assert torch.isfinite(torch.tensor(rotation_best_kl)).item()
+    assert torch.isfinite(torch.tensor(stiefel_best_kl)).item()
+    assert rotation_best_mse > 0 and stiefel_best_mse > 0
+    assert rotation_best_kl >= 0 and stiefel_best_kl >= 0

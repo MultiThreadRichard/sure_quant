@@ -39,6 +39,9 @@ class SureQuantConfig:
     calibration_batch_size: int = 256
     dk_sample_size: int = 128
 
+    # --- Stiefel (Householder parameterization) ---
+    stiefel_num_reflectors: int = 8
+
     # --- Quantisation mode ---
     scale_mode: str = "per_block_absmax"
     target_types: Tuple[str, ...] = ("weight", "activation")
