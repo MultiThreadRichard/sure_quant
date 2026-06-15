@@ -17,15 +17,24 @@ def load_sure_quantizer(path: str, device: str = "cpu") -> SureQuantizer:
     """
     ckpt = torch.load(path, map_location=device, weights_only=True)
 
-    rq = SureQuantizer( 
+    strategy = ckpt.get("strategy", "rotation")
+    rq = SureQuantizer(
         dim=ckpt["dim"],
         block_size=ckpt["block_size"],
         num_bits=ckpt["num_bits"],
-        order=ckpt["order"],
+        order=ckpt.get("order", "hadamard_givens"),
+        rotation_strategy=strategy,
+        stiefel_num_reflectors=ckpt.get("stiefel_num_reflectors", 8),
     )
-    rq.rotation.hadamard.signs.copy_(ckpt["signs"].to(device))
-    rq.rotation.givens.theta.data.copy_(ckpt["theta"].to(device))
-    rq.rotation.givens.pairs = ckpt["pairs"]
+
+    if strategy == "rotation":
+        rq.rotation.hadamard.signs.copy_(ckpt["signs"].to(device))
+        rq.rotation.givens.theta.data.copy_(ckpt["theta"].to(device))
+        rq.rotation.givens.pairs = ckpt["pairs"]
+    elif strategy == "stiefel":
+        rq.rotation.reflectors.data.copy_(ckpt["reflectors"].to(device))
+    else:
+        raise ValueError(f"Unsupported rotation strategy in checkpoint: {strategy}")
     rq.to(device)
     rq.eval()
     return rq

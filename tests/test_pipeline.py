@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from config.default_config import SureQuantConfig
 from model.sure_quantizer import SureQuantizer
 from model.sure_quant_linear import SureQuantLinear
-from train.calibrate_rotations import calibrate_single_layer
+from train.calibrate_rotations import calibrate_rotation
 from train.calibrate_stiefel import calibrate_stiefel
 from train.high_level_api import SureQuantCalibrator
 from export.export_rotation_params import export_sure_quantizer
@@ -55,6 +55,25 @@ def test_sure_quantizer_forward():
     assert out["scale"].shape == (4,)
 
 
+def test_sure_quantizer_forward_with_stiefel_strategy():
+    """SureQuantizer supports injecting stiefel strategy."""
+    dim, block_size = 32, 8
+    x = torch.randn(20, dim)
+    rq = SureQuantizer(
+        dim=dim,
+        block_size=block_size,
+        num_bits=4,
+        rotation_strategy="stiefel",
+        stiefel_num_reflectors=4,
+    )
+    out = rq(x)
+    assert rq.rotation.strategy_name == "stiefel"
+    assert out["x_hat"].shape == x.shape
+    assert out["x_blk"].shape == (20, 4, 8)
+    assert out["z"].shape == (20, 4, 8)
+    assert out["z_hat"].shape == (20, 4, 8)
+
+
 def test_sure_quantizer_reconstruction_improves_with_training():
     """Calibration training reduces reconstruction MSE."""
     dim, block_size = 32, 8
@@ -69,7 +88,7 @@ def test_sure_quantizer_reconstruction_improves_with_training():
     print(f"mse_before={mse_before}")
     
     # Train
-    calibrate_single_layer(rq, x, cfg)
+    calibrate_rotation(rq, x, cfg)
 
     # Measure final MSE
     with torch.no_grad():
@@ -93,10 +112,10 @@ def test_export_load_roundtrip():
     rq = SureQuantizer(dim=dim, block_size=block_size, num_bits=4)
     rq.rotation.givens.theta.data = torch.randn_like(rq.rotation.givens.theta) * 0.1
 
-    # Calibrate briefly so theta is non‑zero
+    # Calibrate briefly so strategy parameters are non-zero
     cfg = make_cfg(calibration_steps=5, calibration_lr=0.01, lambda_dk=0.0)
     x = torch.randn(100, dim)
-    calibrate_single_layer(rq, x, cfg)
+    calibrate_rotation(rq, x, cfg)
 
     with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
         path = f.name
@@ -221,7 +240,7 @@ def test_stiefel_vs_rotation_quant_error_comparison():
 
         # Baseline rotation scheme (Hadamard + learnable Givens)
         rq = SureQuantizer(dim=32, block_size=cfg.block_size, num_bits=cfg.num_bits)
-        calibrate_single_layer(rq, x, cfg)
+        calibrate_rotation(rq, x, cfg)
         with torch.no_grad():
             out = rq(x)
             rot_err = ((out["z"] - out["z_hat"]) ** 2).mean().item()
@@ -309,7 +328,7 @@ def test_stiefel_vs_rotation_quant_error_kl_divergence_comparison():
         x = torch.randn(256, 32)
 
         rq = SureQuantizer(dim=32, block_size=cfg.block_size, num_bits=cfg.num_bits)
-        calibrate_single_layer(rq, x, cfg)
+        calibrate_rotation(rq, x, cfg)
         with torch.no_grad():
             out = rq(x)
             kl_rot = _hist_kl_divergence(out["z"], out["z_hat"]).item()
@@ -362,7 +381,7 @@ def test_stiefel_has_significant_advantage_over_rotation_by_kl():
         x = torch.randn(256, 32)
 
         rq = SureQuantizer(dim=32, block_size=cfg.block_size, num_bits=cfg.num_bits)
-        calibrate_single_layer(rq, x, cfg)
+        calibrate_rotation(rq, x, cfg)
         with torch.no_grad():
             out = rq(x)
             kl_rot = _hist_kl_divergence(out["z"], out["z_hat"]).item()
@@ -393,7 +412,7 @@ def test_stiefel_has_significant_advantage_over_rotation_by_kl():
 
 def _eval_rotation_metrics_with_cfg(x: torch.Tensor, cfg: SureQuantConfig) -> tuple[float, float]:
     rq = SureQuantizer(dim=x.shape[1], block_size=cfg.block_size, num_bits=cfg.num_bits)
-    calibrate_single_layer(rq, x, cfg)
+    calibrate_rotation(rq, x, cfg)
     with torch.no_grad():
         out = rq(x)
         mse = float(((out["z"] - out["z_hat"]) ** 2).mean().item())

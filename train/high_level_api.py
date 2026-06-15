@@ -11,7 +11,7 @@ import torch.nn as nn
 
 from config.default_config import SureQuantConfig
 from model.sure_quantizer import SureQuantizer
-from train.calibrate_rotations import calibrate_single_layer
+from train.calibrate_rotations import calibrate_rotation
 from export.export_rotation_params import export_sure_quantizer
 
 
@@ -104,7 +104,7 @@ class SureQuantCalibrator:
 
         rq = self.layer_quantizers[layer_name]
         x = self.layer_samples[layer_name].to(self.cfg.device)
-        return calibrate_single_layer(rq, x, self.cfg)
+        return calibrate_rotation(rq, x, self.cfg)
 
     # ------------------------------------------------------------------
     # Export

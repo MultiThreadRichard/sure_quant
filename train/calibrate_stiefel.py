@@ -17,13 +17,9 @@ import torch
 
 from config.default_config import SureQuantConfig
 from loss.joint_objective import JointObjective
-from ops.block_ops import blockify
 from quant.fake_quant import BlockUniformQuantizer
-from train.stiefel_optimizer import (
-    StiefelOptimizer,
-    apply_householder_batch,
-    reflectors_to_rotation_matrix,
-)
+from model.sure_quantizer import SureQuantizer
+from train.stiefel_optimizer import StiefelOptimizer, reflectors_to_rotation_matrix
 
 
 def calibrate_stiefel(
@@ -57,8 +53,14 @@ def calibrate_stiefel(
     if k <= 0:
         raise ValueError(f"stiefel_num_reflectors must be positive, got {k}")
 
-    # Block-wise Householder reflectors [M, k, g].
-    V = torch.randn(m, k, g, device=device, dtype=x_all.dtype).requires_grad_(True)
+    rq = SureQuantizer(
+        dim=d,
+        block_size=g,
+        num_bits=cfg.num_bits,
+        rotation_strategy="stiefel",
+        stiefel_num_reflectors=k,
+    ).to(device)
+    rq.train()
 
     stiefel_opt = StiefelOptimizer(lr=cfg.calibration_lr)
     objective = JointObjective(
@@ -68,6 +70,7 @@ def calibrate_stiefel(
         dk_sample_size=cfg.dk_sample_size,
     )
     quantizer = BlockUniformQuantizer(cfg.num_bits)
+    V = rq.rotation.reflectors
 
     logs: List[Dict[str, float]] = []
 
@@ -78,8 +81,8 @@ def calibrate_stiefel(
         else:
             x = x_all
 
-        xb = blockify(x, g)  # [B, M, g]
-        z = apply_householder_batch(xb, V)
+        out = rq(x)
+        z = out["z"]
         qz, _ = quantizer(z)
 
         loss_info = objective.compute(z, qz)
@@ -116,10 +119,13 @@ def calibrate_stiefel(
                 f"loss_b={loss_b.item():.6f}"
             )
 
+    rq.eval()
+
     with torch.no_grad():
         rotations = reflectors_to_rotation_matrix(V)
 
     return {
+        "quantizer": rq,
         "rotations": rotations.detach(),
         "reflectors": V.detach(),
         "logs": logs,

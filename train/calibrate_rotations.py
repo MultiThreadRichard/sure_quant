@@ -55,12 +55,12 @@ from loss.range_loss import range_loss
 from loss.total_loss import build_total_loss
 
 
-def calibrate_single_layer(
+def calibrate_rotation(
     sure_quantizer: SureQuantizer,
     sample_tensor: torch.Tensor,
     cfg: SureQuantConfig,
 ) -> List[Dict]:
-    """Train the Givens rotation parameters on a single layer's data.
+    """Train the rotation (Givens) parameters on a single layer's data.
 
     The quantiser is placed in train mode during calibration so that
     batch‑norm‑style statistics (if any) are updated and the Givens θ
@@ -79,6 +79,10 @@ def calibrate_single_layer(
     """
     # ---- Setup ----
     sure_quantizer.train()
+
+    # This trainer is for the classic Hadamard+Givens rotation strategy.
+    if not hasattr(sure_quantizer.rotation, "givens"):
+        raise ValueError("calibrate_rotation requires rotation strategy with learnable givens parameters")
 
     # Only the Givens angles are learnable.  Hadamard signs are a buffer
     # and the quantiser has no parameters, so this selects only θ.

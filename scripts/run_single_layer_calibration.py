@@ -14,7 +14,7 @@ import torch
 
 from config.default_config import SureQuantConfig
 from model.sure_quantizer import SureQuantizer
-from train.calibrate_rotations import calibrate_single_layer
+from train.calibrate_rotations import calibrate_rotation
 from export.export_rotation_params import export_sure_quantizer
 
 
@@ -65,7 +65,7 @@ def main():
 
     # Calibrate
     print(f"Starting calibration ({cfg.calibration_steps} steps) ...")
-    logs = calibrate_single_layer(rq, x, cfg)
+    logs = calibrate_rotation(rq, x, cfg)
 
     # Export
     export_sure_quantizer(rq, args.output)
