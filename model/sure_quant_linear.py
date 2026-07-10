@@ -37,10 +37,16 @@ class SureQuantLinear(nn.Module):
         Returns:
             Output tensor of shape ``[..., out_features]``.
         """
+        input_dtype = x.dtype
+        # print(f"Input dtype: {input_dtype}")
         original_shape = x.shape
         x2d = x.reshape(-1, x.shape[-1])
         out_dict = self.sure_quantizer(x2d)
         x_hat = out_dict["x_hat"]  # approximated quantised input
+
+        # print(f"x_hat dtype: {x_hat.dtype}")
+        x_hat = x_hat.to(input_dtype)  # Ensure x_hat has the same dtype as input
+
         y = self.linear(x_hat)
         new_shape = list(original_shape[:-1]) + [y.shape[-1]]
         return y.view(*new_shape)

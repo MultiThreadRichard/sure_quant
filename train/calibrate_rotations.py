@@ -108,6 +108,127 @@ def calibrate_rotation(
             x = sample_tensor[idx]
         else:
             x = sample_tensor
+        # print(f"x.shape: {x.shape}")
+
+        # --- Forward pass through the full quantization pipeline ---
+        # out["x_blk"]: original in block form        [B, M, g]
+        # out["z"]:     rotated (pre‑quant)            [B, M, g]
+        # out["x_hat_blk"]: reconstructed blocks       [B, M, g]
+        # out["x_hat"]:    reconstructed flat vectors  [B, D]
+        out = sure_quantizer(x)
+        x_blk = out["x_blk"]
+        x_hat_blk = out["x_hat_blk"]
+        z = out["z"]
+
+        # --- Compute loss components ---
+        # Primary objective: minimise reconstruction error.
+        loss_rec = reconstruction_loss(x_blk, x_hat_blk)
+
+        # Auxiliary objectives computed on the rotated (pre‑quant) space z.
+        # We regularise z because that is what the quantiser sees.
+        loss_dk = dk_loss_fn(z)          # spread vectors uniformly
+        loss_bal = balance_loss(z)       # equal variance across coords
+        loss_rng = range_loss(z)         # avoid extreme block scales
+
+        # Weighted sum
+        loss = build_total_loss(loss_rec, loss_dk, loss_bal, loss_rng, cfg)
+
+        # --- Gradient step ---
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        # --- Logging ---
+        log_item = {
+            "step": step,
+            "loss": float(loss.item()),
+            "loss_rec": float(loss_rec.item()),
+            "loss_dk": float(loss_dk.item()),
+            "loss_bal": float(loss_bal.item()),
+            "loss_rng": float(loss_rng.item()),
+        }
+        logs.append(log_item)
+
+        if step % 100 == 0 or step == cfg.calibration_steps - 1:
+            print(
+                f"[{step:4d}/{cfg.calibration_steps}] "
+                f"total={loss.item():.6f}  "
+                f"rec={loss_rec.item():.6f}  "
+                f"dk={loss_dk.item():.4f}  "
+                f"bal={loss_bal.item():.4f}  "
+                f"rng={loss_rng.item():.4f}"
+            )
+
+    # ---- Cleanup ----
+    sure_quantizer.eval()
+    return logs
+
+
+def calibrate_llava(
+    sure_quantizer: SureQuantizer,
+    tensor_list: List[torch.Tensor],
+    cfg: SureQuantConfig,
+) -> List[Dict]:
+    """Train the rotation (Givens) parameters on LLaVA calibration data.
+
+    Similar to calibrate_rotation, but accepts a list of calibration tensors
+    instead of a single tensor. This is useful for LLaVA models where
+    calibration data may come from different sources (vision encoder,
+    language decoder, etc.).
+
+    The quantiser is placed in train mode during calibration so that
+    batch‑norm‑style statistics (if any) are updated and the Givens θ
+    gradients flow.  After calibration it is set to eval mode for
+    deterministic inference.
+
+    Args:
+        sure_quantizer: The ``SureQuantizer`` to calibrate.
+            Must already be on the correct device.
+        tensor_list: List of calibration tensors, each of shape ``[N_i, D]``
+            on the target device. All tensors must have the same dimension D.
+        cfg: Training hyper‑parameters (steps, LR, loss weights, etc.).
+
+    Returns:
+        List of per‑step log dicts with keys
+        ``step, loss, loss_rec, loss_dk, loss_bal, loss_rng``.
+    """
+    # ---- Setup ----
+    sure_quantizer.train()
+
+    # This trainer is for the classic Hadamard+Givens rotation strategy.
+    if not hasattr(sure_quantizer.rotation, "givens"):
+        raise ValueError("calibrate_llava requires rotation strategy with learnable givens parameters")
+
+    # Only the Givens angles are learnable.  Hadamard signs are a buffer
+    # and the quantiser has no parameters, so this selects only θ.
+    optimizer = Adam(
+        sure_quantizer.rotation.givens.parameters(),
+        lr=cfg.calibration_lr,
+    )
+    # DKoleo is stateful only for the sub‑sampling; instantiate once.
+    dk_loss_fn = DKoleoLoss(sample_size=cfg.dk_sample_size)
+
+    logs: List[Dict] = []
+
+    # Calculate total number of samples across all tensors
+    total_samples = len(tensor_list)
+
+    # ---- Training loop ----
+    for step in range(cfg.calibration_steps):
+        # --- Mini‑batch sampling from tensor list ---
+        # Randomly select a tensor from the list, then sample from it
+        x = torch.cat(tensor_list, dim=0)
+        print(f"x.shape: {x.shape}")
+
+        if total_samples > cfg.calibration_batch_size:
+            # Randomly select one tensor from the list
+            idx = torch.randperm(total_samples, device=x.device)[
+                : cfg.calibration_batch_size
+            ]
+            x = x[idx]
+        
+        print(f"x.shape: {x.shape}")
+
 
         # --- Forward pass through the full quantization pipeline ---
         # out["x_blk"]: original in block form        [B, M, g]
