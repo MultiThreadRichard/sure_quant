@@ -10,6 +10,95 @@ from model.wrappers import CompositeBlockRotation, StiefelHouseholderRotation
 from quant.fake_quant import BlockUniformQuantizer
 
 
+class HadamardOnlyQuantizer(nn.Module):
+    """Quantizer using only Hadamard rotation.
+
+    This quantizer applies only the random sign flip + Walsh-Hadamard transform
+    without any learnable Givens rotation.
+
+    Args:
+        dim: Input dimension ``D``.
+        block_size: Block size ``g`` (must be power of two).
+        num_bits: Quantization bit-width.
+    """
+
+    def __init__(self, dim: int, block_size: int, num_bits: int):
+        super().__init__()
+        if dim % block_size != 0:
+            raise ValueError(f"dim={dim} must be divisible by block_size={block_size}")
+
+        self.dim = dim
+        self.block_size = block_size
+        self.num_blocks = dim // block_size
+
+        self.rotation = BlockHadamardTransform(self.block_size, self.num_blocks)
+        self.quantizer = BlockUniformQuantizer(num_bits)
+
+    def forward(self, x: torch.Tensor):
+        if x.dim() != 2 or x.shape[1] != self.dim:
+            raise ValueError(f"Expected x of shape [N, {self.dim}], got {x.shape}")
+
+        x_blk = blockify(x, self.block_size)
+        z = self.rotation(x_blk)
+        z_hat, scale = self.quantizer(z)
+        x_hat_blk = self.rotation.inverse(z_hat)
+        x_hat = deblockify(x_hat_blk)
+
+        return {
+            "x_blk": x_blk,
+            "z": z,
+            "z_hat": z_hat,
+            "x_hat_blk": x_hat_blk,
+            "x_hat": x_hat,
+            "scale": scale,
+        }
+
+
+class GivensOnlyQuantizer(nn.Module):
+    """Quantizer using only learnable Givens rotation.
+
+    This quantizer applies only the learnable Givens rotation without
+    the Hadamard pre-rotation. The Givens rotation is initialized as
+    identity matrix and can be learned via gradient descent.
+
+    Args:
+        dim: Input dimension ``D``.
+        block_size: Block size ``g``.
+        num_bits: Quantization bit-width.
+    """
+
+    def __init__(self, dim: int, block_size: int, num_bits: int):
+        super().__init__()
+        if dim % block_size != 0:
+            raise ValueError(f"dim={dim} must be divisible by block_size={block_size}")
+
+        self.dim = dim
+        self.block_size = block_size
+        self.num_blocks = dim // block_size
+
+        self.rotation = BlockGivensRotation(self.block_size, self.num_blocks)
+        self.quantizer = BlockUniformQuantizer(num_bits)
+
+    def forward(self, x: torch.Tensor):
+        if x.dim() != 2 or x.shape[1] != self.dim:
+            raise ValueError(f"Expected x of shape [N, {self.dim}], got {x.shape}")
+
+        x_blk = blockify(x, self.block_size)
+        z = self.rotation(x_blk)
+        z_hat, scale = self.quantizer(z)
+        x_hat_blk = self.rotation.inverse(z_hat)
+        x_hat = deblockify(x_hat_blk)
+
+        return {
+            "x_blk": x_blk,
+            "z": z,
+            "z_hat": z_hat,
+            "x_hat_blk": x_hat_blk,
+            "x_hat": x_hat,
+            "scale": scale,
+        }
+
+
 class SureQuantizer(nn.Module):
     """Full rotation-quantization pipeline.
 
