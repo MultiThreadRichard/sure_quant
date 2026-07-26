@@ -1,0 +1,672 @@
+"""LLaVA Model Quantization with SureQuant."""
+import sys
+import os
+sys.path.append("/home/ccwan/stu_Jiangtp/sure_quant")
+
+import time
+import torch
+import torch.nn as nn
+from transformers import AutoProcessor, LlavaForConditionalGeneration
+
+from model.sure_quantizer import SureQuantizer
+from model.sure_quant_linear import SureQuantLinear
+
+from PIL import Image
+from datasets import load_dataset
+
+from train.calibrate_rotations import calibrate_rotation
+from config.default_config import SureQuantConfig
+from loss.reconstruction import reconstruction_loss
+
+
+"""
+校准
+权重,激活: SureQuantizer
+"""
+
+
+def quantize_linear_layer(
+    linear: nn.Linear,
+    num_bits: int = 4,
+    block_size: int = 128,
+    rotation_strategy: str = "rotation",
+    quantize_weight: bool = True
+) -> SureQuantLinear:
+    """将普通 Linear 层替换为量化 Linear 层
+
+    Args:
+        linear: 原始 nn.Linear 层
+        num_bits: 量化位宽
+        block_size: 分块大小
+        rotation_strategy: 旋转策略 ("rotation" 或 "stiefel")
+        quantize_weight: 是否对权重应用旋转量化
+
+    Returns:
+        SureQuantLinear: 量化后的线性层
+    """
+    activation_quantizer = SureQuantizer(
+        dim=linear.in_features,
+        block_size=block_size,
+        num_bits=num_bits,
+        rotation_strategy=rotation_strategy
+    )
+
+    weight_quantizer = None
+    if quantize_weight and linear.out_features % block_size == 0:
+        weight_quantizer = SureQuantizer(
+            dim=linear.out_features,
+            block_size=block_size,
+            num_bits=num_bits,
+            rotation_strategy=rotation_strategy
+        )
+
+    return SureQuantLinear(linear, activation_quantizer, weight_quantizer)
+
+
+def quantize_llava_model(
+    model: LlavaForConditionalGeneration,
+    num_bits: int = 4,
+    block_size: int = 128,
+    rotation_strategy: str = "rotation",
+    quantize_vision: bool = True,
+    quantize_mm_proj: bool = True,
+    quantize_language: bool = True,
+    quantize_weight: bool = True
+) -> LlavaForConditionalGeneration:
+    """量化 LLaVA 模型的激活和权重
+
+    Args:
+        model: 原始 LLaVA 模型
+        num_bits: 量化位宽
+        block_size: 分块大小
+        rotation_strategy: 旋转策略
+        quantize_vision: 是否量化视觉编码器
+        quantize_mm_proj: 是否量化多模态投影层
+        quantize_language: 是否量化语言解码器
+        quantize_weight: 是否对权重应用旋转量化
+
+    Returns:
+        LlavaForConditionalGeneration: 量化后的模型
+    """
+    def quantize_module(submodule):
+        for name, module in submodule.named_modules():
+            if isinstance(module, nn.Linear):
+                if 'lm_head' in name:
+                    continue
+
+                quantized_linear = quantize_linear_layer(
+                    module, num_bits, block_size, rotation_strategy, quantize_weight
+                )
+                parent_module = get_parent_module(submodule, name)
+                set_attr_by_name(parent_module, name.split('.')[-1], quantized_linear)
+
+    if quantize_vision:
+        print(">>>>> Quantizing vision model...")
+        quantize_module(model.vision_tower.vision_model.encoder.layers)
+
+    if quantize_mm_proj:
+        print(">>>>> Quantizing multimodal projection...")
+        quantize_module(model.multi_modal_projector)
+
+    if quantize_language:
+        print(">>>>> Quantizing language model...")
+        quantize_module(model.language_model.model.layers)
+
+    return model
+
+
+def get_parent_module(module: nn.Module, name: str) -> nn.Module:
+    """获取模块的父模块"""
+    parts = name.split('.')
+    if len(parts) == 1:
+        return module
+    parent_name = '.'.join(parts[:-1])
+    return module.get_submodule(parent_name)
+
+
+def set_attr_by_name(module: nn.Module, attr_name: str, value):
+    """通过名称设置模块属性"""
+    setattr(module, attr_name, value)
+
+
+def collect_calib_data_from_full_model(
+    model: LlavaForConditionalGeneration,
+    processor,
+    image_paths: list,
+    prompts: list,
+    device: torch.device,
+    max_samples_per_layer: int = 512,
+) -> dict:
+    """收集模型各层的激活数据作为校准数据"""
+    model.eval()
+    activation_dict = {}
+
+    def hook_fn(name):
+        def hook(module, input, output):
+            if isinstance(module, nn.Linear):
+                if input[0] is not None:
+                    if name not in activation_dict:
+                        activation_dict[name] = []
+                    act = input[0].detach().cpu()
+                    if act.dim() > 2:
+                        act = act.view(-1, act.shape[-1])
+                    activation_dict[name].append(act)
+        return hook
+
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            hooks.append(module.register_forward_hook(hook_fn(name)))
+
+    with torch.no_grad():
+        for img_path, prompt in zip(image_paths, prompts):
+            raw_image = Image.open(img_path)
+            inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(device)
+            model(**inputs)
+
+    for h in hooks:
+        h.remove()
+
+    for name in activation_dict:
+        activation_dict[name] = torch.cat(activation_dict[name], dim=0)
+        total_samples = activation_dict[name].shape[0]
+        if total_samples > max_samples_per_layer:
+            idx = torch.randperm(total_samples)[:max_samples_per_layer]
+            activation_dict[name] = activation_dict[name][idx]
+        print(f"name: {name}, collected {total_samples}, kept {activation_dict[name].shape[0]}")
+
+    return activation_dict
+
+
+def collect_calib_data_from_inputs(
+    model: LlavaForConditionalGeneration,
+    inputs_list: list,
+    max_samples_per_layer: int = 512,
+) -> dict:
+    """从预处理好的输入列表收集模型各层的激活数据作为校准数据"""
+    model.eval()
+    activation_dict = {}
+
+    def hook_fn(name):
+        def hook(module, input, output):
+            if isinstance(module, nn.Linear):
+                if input[0] is not None:
+                    if name not in activation_dict:
+                        activation_dict[name] = []
+                    act = input[0].detach().cpu()
+                    if act.dim() > 2:
+                        act = act.view(-1, act.shape[-1])
+                    activation_dict[name].append(act)
+        return hook
+
+    hooks = []
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            hooks.append(module.register_forward_hook(hook_fn(name)))
+
+    with torch.no_grad():
+        for inputs in inputs_list:
+            model(**inputs)
+
+    for h in hooks:
+        h.remove()
+
+    for name in activation_dict:
+        activation_dict[name] = torch.cat(activation_dict[name], dim=0)
+        total_samples = activation_dict[name].shape[0]
+        if total_samples > max_samples_per_layer:
+            idx = torch.randperm(total_samples)[:max_samples_per_layer]
+            activation_dict[name] = activation_dict[name][idx]
+        print(f"name: {name}, collected {total_samples}, kept {activation_dict[name].shape[0]}")
+
+    return activation_dict
+
+
+def eval_reconstruction_mse(rq: SureQuantizer, x: torch.Tensor):
+    with torch.no_grad():
+        out = rq(x)
+        mse = reconstruction_loss(out["x_blk"], out["x_hat_blk"]).item()
+    return mse
+
+
+def calibrate_weight_rotation(weight_quantizer, weight_data, cfg):
+    """校准权重旋转量化器（使用 SureQuantizer，在 CPU 上执行以节省 GPU 内存）
+
+    特别注意：该步骤在 GPU 上容易因显存不足触发 OOM，因此当前临时改为 CPU 执行。
+    代价是整个量化校准流程会非常慢，完整流程可能超过 10+ 小时。
+
+    Args:
+        weight_quantizer: SureQuantizer 实例
+        weight_data: 原始权重数据 [out_features, in_features]
+        cfg: 校准配置
+
+    Returns:
+        dict: 校准日志
+    """
+    # 特别注意：GPU 显存不足会导致量化校准阶段 OOM，故此处强制使用 CPU 训练。
+    # 该临时方案会显著增加总耗时，完整量化校准流程可能超过 10+ 小时。
+    cpu_device = torch.device("cpu")
+    weight_quantizer = weight_quantizer.to(cpu_device)
+    weight_quantizer.train()
+
+    optimizer = torch.optim.AdamW(weight_quantizer.rotation.parameters(), lr=cfg.calibration_lr)
+
+    logs = {"weight_rec": []}
+
+    weight_data_t = weight_data.cpu().T.contiguous()
+    # weight_data_t = weight_data.T.contiguous()
+
+
+    for step in range(cfg.calibration_steps):
+        optimizer.zero_grad()
+
+        out_dict = weight_quantizer(weight_data_t)
+        w_hat = out_dict["x_hat"]
+        w_blk = out_dict["x_blk"]
+        w_hat_blk = out_dict["x_hat_blk"]
+
+        rec_loss = reconstruction_loss(w_blk, w_hat_blk)
+
+        rec_loss.backward()
+        optimizer.step()
+
+        logs["weight_rec"].append(rec_loss.item())
+
+        if step % max(1, cfg.calibration_steps // 5) == 0:
+            print(f"    Weight calibration step {step+1}/{cfg.calibration_steps}, rec={rec_loss.item():.6f}")
+
+    weight_quantizer.eval()
+    return logs
+
+
+def calibrate_all_quantizers(
+    quantized_model: LlavaForConditionalGeneration,
+    calibration_data: dict,
+    cfg: SureQuantConfig = None
+) -> dict:
+    """校准量化模型中所有的 SureQuantizer（激活和权重）"""
+    if cfg is None:
+        cfg = SureQuantConfig()
+
+    device = next(quantized_model.parameters()).device
+    logs_dict = {}
+
+    import psutil
+
+    layer_count = 0
+    total_layers = sum(1 for _, m in quantized_model.named_modules() if isinstance(m, SureQuantLinear))
+
+    for name, module in quantized_model.named_modules():
+        if isinstance(module, SureQuantLinear):
+            layer_count += 1
+            print(f"SureQuantLinear name: {name} ({layer_count}/{total_layers})")
+
+            cpu_mem = psutil.Process().memory_info().rss / 1e9
+            print(f"  CPU memory: {cpu_mem:.2f}GB")
+
+            if device.type == 'cuda':
+                mem_allocated = torch.cuda.memory_allocated(device) / 1e9
+                mem_reserved = torch.cuda.memory_reserved(device) / 1e9
+                print(f"  GPU memory: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB")
+
+            layer_logs = {}
+
+            activation_quantizer = module.activation_quantizer
+            if name in calibration_data:
+                print(f"\n===== Calibrating activation quantizer for {name} =====")
+                try:
+                    sample_data = calibration_data[name].to(device)
+
+                    if sample_data.shape[-1] != activation_quantizer.dim:
+                        raise ValueError(f"Calibration data dimension {sample_data.shape[-1]} does not match quantizer dimension {activation_quantizer.dim} for layer {name}")
+
+                    sample_data = sample_data.view(-1, activation_quantizer.dim)
+
+                    activation_logs = calibrate_rotation(activation_quantizer, sample_data, cfg)
+                    layer_logs["activation"] = activation_logs
+
+                except Exception as e:
+                    print(f"  ERROR calibrating activation for {name}: {type(e).__name__}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            else:
+                print(f"\n===== {name} has no activation calibration data, skipping =====")
+
+            if module.weight_quantizer is not None:
+                print(f"\n===== Calibrating weight quantizer for {name} =====")
+                try:
+                    weight_data = module.linear.weight.data
+                    weight_logs = calibrate_weight_rotation(module.weight_quantizer, weight_data, cfg)
+                    layer_logs["weight"] = weight_logs
+
+                    module.quantize_weight()
+
+                except Exception as e:
+                    print(f"  ERROR calibrating weight for {name}: {type(e).__name__}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
+            else:
+                print(f"\n===== {name} has no weight quantizer, skipping weight calibration =====")
+
+            logs_dict[name] = layer_logs
+
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+                mem_allocated_after = torch.cuda.memory_allocated(device) / 1e9
+                mem_reserved_after = torch.cuda.memory_reserved(device) / 1e9
+                print(f"  GPU memory after empty_cache: allocated={mem_allocated_after:.2f}GB, reserved={mem_reserved_after:.2f}GB")
+
+    print(f">>>>>>>>  Calibration completed")
+    return logs_dict
+
+
+def prepare_calib_data():
+    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+
+    model = LlavaForConditionalGeneration.from_pretrained(
+        checkpoint,
+        device_map='cuda',
+        torch_dtype=torch.float16,
+    )
+    processor = AutoProcessor.from_pretrained(checkpoint)
+
+    device = next(model.parameters()).device
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please describe the animal in this image\n"},
+                {"type": "image"},
+            ],
+        },
+    ]
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+
+    calib_data_dict = collect_calib_data_from_full_model(
+        model,
+        processor,
+        image_paths=["/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg"],
+        prompts=[prompt],
+        device=device,
+    )
+
+    return calib_data_dict
+
+
+def load_calib_data(calib_sample_num=128):
+    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+
+    model = LlavaForConditionalGeneration.from_pretrained(
+        checkpoint,
+        device_map='cuda',
+        torch_dtype=torch.float16,
+    )
+    processor = AutoProcessor.from_pretrained(checkpoint)
+
+    device = next(model.parameters()).device
+
+    data_path_list = [
+        '/home/ccwan/stu_Jiangtp/data/flickr30k/test-00000-of-00009.parquet',
+    ]
+
+    calib_dataset = load_dataset('parquet', data_files=data_path_list[0], split='train')
+    print(f">>>>>>>> load dataset path: {data_path_list[0]}")
+
+    calib_dataset = calib_dataset.select(range(calib_sample_num))
+
+    print(f'len(calib_dataset): {len(calib_dataset)}')
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please describe the animal in this image\n"},
+                {"type": "image"},
+            ],
+        },
+    ]
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+
+    inputs_list = []
+    for item in calib_dataset:
+        raw_image = item['image']
+        inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(device)
+        inputs_list.append(inputs)
+
+    calib_data_dict = collect_calib_data_from_inputs(model, inputs_list)
+
+    del model
+    del inputs_list
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    print(f">>>>>>>> released model memory after collecting calibration data")
+
+    return calib_data_dict
+
+
+def infer(model, processor, img_path):
+    print("========== SAMPLE GENERATION ==============")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please describe the animal in this image\n"},
+                {"type": "image"},
+            ],
+        },
+    ]
+    # messages = [
+    #     {
+    #         "role": "user",
+    #         "content": [
+    #             {"type": "text", "text": "A cat is in the image. Please answer yes or no."},
+    #             {"type": "image"},
+    #         ],
+    #     },
+    # ]
+    # messages = [
+    #     {
+    #         "role": "user",
+    #         "content": [
+    #             {"type": "text", "text": "Two dogs are in the image. Please answer yes or no."},
+    #             {"type": "image"},
+    #         ],
+    #     },
+    # ]
+    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+    raw_image = Image.open(img_path)
+
+    inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(model.device)
+    print(inputs.keys())
+    print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
+
+    with torch.no_grad():
+        output = model.generate(**inputs, max_new_tokens=128)
+    print("output: ", output)
+    print("output.shape: ", output.shape)
+
+    print(processor.decode(output[0], skip_special_tokens=True))
+    print("==========================================")
+    return output[0]
+
+
+def make_cfg() -> SureQuantConfig:
+    cfg = SureQuantConfig()
+    cfg.num_bits = 4
+    cfg.block_size = 128
+    cfg.calibration_steps = 10
+    cfg.calibration_batch_size = 128
+    cfg.calibration_lr = 0.01
+    cfg.device = "cuda"
+    return cfg
+
+
+def save_quantized_model(
+    quantized_model: LlavaForConditionalGeneration,
+    save_path: str,
+    cfg: SureQuantConfig = None
+) -> None:
+    """保存量化后的模型及其配置
+
+    Args:
+        quantized_model: 已校准的量化模型
+        save_path: 保存路径（目录）
+        cfg: 量化配置（可选）
+    """
+    os.makedirs(save_path, exist_ok=True)
+
+    # 保存模型权重
+    model_path = os.path.join(save_path, "pytorch_model.bin")
+    torch.save(quantized_model.state_dict(), model_path)
+    print(f"Model weights saved to {model_path}")
+
+    # 保存配置
+    if cfg is not None:
+        cfg_path = os.path.join(save_path, "quant_config.json")
+        import json
+        cfg_dict = {
+            "num_bits": cfg.num_bits,
+            "block_size": cfg.block_size,
+            "rotation_strategy": cfg.rotation_strategy,
+        }
+        with open(cfg_path, 'w') as f:
+            json.dump(cfg_dict, f, indent=2)
+        print(f"Quantization config saved to {cfg_path}")
+
+    # 保存处理器配置（用于推理）
+    processor_config_path = os.path.join(save_path, "processor_config.json")
+    processor_config = {
+        "model_name_or_path": "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf",
+    }
+    with open(processor_config_path, 'w') as f:
+        json.dump(processor_config, f, indent=2)
+    print(f"Processor config saved to {processor_config_path}")
+
+    print(f"Quantized model saved successfully to {save_path}")
+
+
+def load_quantized_model(
+    save_path: str,
+    device: str = "cuda"
+) -> LlavaForConditionalGeneration:
+    """加载已保存的量化模型
+
+    Args:
+        save_path: 模型保存路径（目录）
+        device: 加载设备
+
+    Returns:
+        LlavaForConditionalGeneration: 加载后的量化模型
+    """
+    import json
+
+    # 加载配置
+    cfg_path = os.path.join(save_path, "quant_config.json")
+    with open(cfg_path, 'r') as f:
+        cfg_dict = json.load(f)
+
+    num_bits = cfg_dict.get("num_bits", 4)
+    block_size = cfg_dict.get("block_size", 128)
+    rotation_strategy = cfg_dict.get("rotation_strategy", "rotation")
+
+    # 加载处理器配置
+    processor_config_path = os.path.join(save_path, "processor_config.json")
+    with open(processor_config_path, 'r') as f:
+        processor_config = json.load(f)
+    checkpoint = processor_config["model_name_or_path"]
+
+    # 先加载原始模型
+    model = LlavaForConditionalGeneration.from_pretrained(
+        checkpoint,
+        device_map='cuda',
+        torch_dtype=torch.float16,
+    )
+
+    # 应用量化（替换为 SureQuantLinear）
+    quantized_model = quantize_llava_model(
+        model,
+        num_bits=num_bits,
+        block_size=block_size,
+        rotation_strategy=rotation_strategy,
+        quantize_weight=True
+    )
+
+    # 加载量化后的权重
+    model_path = os.path.join(save_path, "pytorch_model.bin")
+    state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
+    quantized_model.load_state_dict(state_dict)
+
+    # 移动到目标设备
+    quantized_model.to(device)
+    quantized_model.eval()
+
+    print(f"Quantized model loaded successfully from {save_path}")
+    return quantized_model
+
+
+
+
+def example_calib():
+    cfg = make_cfg()
+    cfg.num_bits = 4
+    cfg.block_size = 128
+    cfg.calibration_steps = 3
+    cfg.calibration_batch_size = 128
+    cfg.calibration_lr = 0.005
+    cfg.rotation_strategy = "rotation"
+    print(f"entry file:{os.path.abspath(__file__)}\n cfg: {cfg}")
+
+    calib_data_dict = load_calib_data(cfg.calibration_batch_size)
+
+    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+
+    model = LlavaForConditionalGeneration.from_pretrained(
+        checkpoint,
+        device_map='cuda',
+        torch_dtype=torch.float16,
+    )
+
+    quantized_model = quantize_llava_model(
+        model,
+        num_bits=cfg.num_bits,
+        block_size=cfg.block_size,
+        rotation_strategy=cfg.rotation_strategy,
+        quantize_weight=True
+    )
+    quantized_model.to("cuda")
+
+    logs_dict = calibrate_all_quantizers(quantized_model, calib_data_dict, cfg)
+
+    # 保存量化后的模型
+    save_path = "/home/ccwan/stu_Jiangtp/sure_quant/model_saved/llava_7b_sure_calib_4bit_blk128"
+    save_quantized_model(quantized_model, save_path, cfg)
+
+    processor = AutoProcessor.from_pretrained(checkpoint)
+    infer(quantized_model, processor, "/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    infer(quantized_model, processor, "/home/ccwan/stu_Jiangtp/MQuant/assert/sample2.jpg")
+
+    # 加载保存的模型并推理
+    print("\n========== Loading saved quantized model ==========")
+    loaded_model = load_quantized_model(save_path, device="cuda")
+    infer(loaded_model, processor, "/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    infer(loaded_model, processor, "/home/ccwan/stu_Jiangtp/MQuant/assert/sample2.jpg")
+
+
+
+if __name__ == "__main__":
+    # start_time = time.time()
+    # example_calib()
+    # end_time = time.time()
+    # elapsed_time = end_time - start_time
+    # print(f">>>>>>>>>>>> done, elapsed time: {elapsed_time:.2f} seconds")
+
+    save_path = "/home/ccwan/stu_Jiangtp/sure_quant/model_saved/llava_7b_sure_calib_4bit_blk128"
+    loaded_model = load_quantized_model(save_path, device="cuda")
+    processor = AutoProcessor.from_pretrained("/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf")
+    infer(loaded_model, processor, "/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    infer(loaded_model, processor, "/home/ccwan/stu_Jiangtp/MQuant/assert/sample2.jpg")

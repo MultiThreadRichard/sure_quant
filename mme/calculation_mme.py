@@ -7,13 +7,17 @@ import re
 
 
 # TO MOD
-output_path = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res/metrics'
+# output_path = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res/metrics'
+output_path = '/home/ccwan/stu_Jiangtp/sure_quant/logs/mme_eval_res/metrics'
+
 
 os.makedirs(output_path, exist_ok=True)
 
 out_file_name = 'metric_llava_test.txt'
 
-src_partition_dir = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res'
+# src_partition_dir = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res'
+src_partition_dir = '/home/ccwan/stu_Jiangtp/sure_quant/logs/mme_eval_res'
+
 
 os.makedirs(src_partition_dir, exist_ok=True)
 
@@ -43,7 +47,7 @@ def extract_assistant_first(text):
     match = re.search(pattern, text)
     
     if match:
-        return match.group().strip()  # 去除首尾空白字符
+        return match.group(1).strip()  # 去除首尾空白字符
     else:
         print('>>>>>>>>>>>> extract_assistant_first: not match')
         return None  # 没有找到则返回None
@@ -199,9 +203,11 @@ class calculate_metrics:
                             # print(resp.split(" ")[-1])
                             # print(extract_assistant_first(resp).split(" ")[1])
 
-                            pred_ans = extract_assistant_first(resp).split(" ")[1]
-                            # pred_ans = resp.split("\\n")[-1]
+                            pred_ans = extract_assistant_first(resp)
                             # print(f'pred_ans: {pred_ans}')
+
+                            # pred_ans = extract_assistant_first(resp).split(" ")[1]
+                            # pred_ans = resp.split("\\n")[-1]
 
                             gt_ans = gt_ans.lower()
                             pred_ans = pred_ans.lower()
@@ -247,13 +253,29 @@ class calculate_metrics:
         return
 
 
+def write_res_to_file():
+    src_path = os.path.join(src_partition_dir, src_partition_file)
+
+    with open(src_path, 'w', encoding='utf-8') as output_file:
+        for i in range(4):
+            # 构建输入文件名，格式为 eval_results01.txt, eval_results02.txt, eval_results03.txt
+            input_path = os.path.join(src_partition_dir, f'eval_results0{i}.txt')
+            try:
+                with open(input_path, 'r', encoding='utf-8') as input_file:
+                    content = input_file.read()
+                    output_file.write(content)
+
+            except FileNotFoundError:
+                print(f"警告：文件 {input_path} 不存在，已跳过")
 
 
 if __name__ == "__main__":
+    # write_res_to_file()
+
     cal = calculate_metrics()
     # args = parser.parse_args()
     # results_dir = args.results_dir
 
-    cal.partition_task(src_partition_dir)
+    # cal.partition_task(src_partition_dir)
     cal.process_result(src_partition_dir)
     print(">>>>>>>>> process_result done.")

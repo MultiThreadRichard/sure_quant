@@ -48,6 +48,12 @@ import torch
 import torch.nn as nn
 
 
+def asym_quant_dequant(x, scale, zero, maxq):
+    """Asymmetric quantization followed by dequantization."""
+    q = torch.clamp(torch.round(x / scale + zero), 0, maxq)
+    return (q - zero) * scale
+
+
 class BlockUniformQuantizer(nn.Module):
     """Symmetric per‑block uniform fake quantizer.
 
@@ -111,3 +117,83 @@ class BlockUniformQuantizer(nn.Module):
         #   → backward: grad flows only through the 'z' term ✓
         z_hat = z + (z_q - z).detach()
         return z_hat, scale
+
+
+class WeightQuantizer(torch.nn.Module):
+    """Asymmetric weight quantizer for int4 quantization.
+
+    This quantizer performs asymmetric quantization on weights with per-channel
+    scaling. It is designed for weight-only quantization without calibration.
+
+    Args:
+        shape: Shape for scale and zero-point buffers.
+    """
+
+    def __init__(self, shape=1):
+        super(WeightQuantizer, self).__init__()
+        self.register_buffer("maxq", torch.tensor(0))
+        self.register_buffer("scale", torch.zeros(shape))
+        self.register_buffer("zero", torch.zeros(shape))
+        self.bits = 4  # Fixed to int4
+        self.perchannel = True  # Fixed to per-channel
+        self.sym = False  # Fixed to asymmetric
+        self.mse = False  # No MSE optimization
+        self.maxq = torch.tensor(2**4 - 1)  # 15 for int4
+
+    def find_params(self, x):
+        """Compute scale and zero-point for asymmetric quantization.
+
+        Args:
+            x: Input tensor to be quantized.
+        """
+        dev = x.device
+        self.maxq = self.maxq.to(dev)
+
+        shape = x.shape
+        if self.perchannel:
+            x = x.flatten(1)
+        else:
+            x = x.flatten().unsqueeze(0)
+
+        tmp = torch.zeros(x.shape[0], device=dev)
+        xmin = torch.minimum(x.min(1)[0], tmp)
+        xmax = torch.maximum(x.max(1)[0], tmp)
+
+        # Handle zero input case
+        tmp = (xmin == 0) & (xmax == 0)
+        xmin[tmp] = -1
+        xmax[tmp] = +1
+
+        self.scale = (xmax - xmin).clamp(min=1e-5) / self.maxq
+        self.zero = torch.round(-xmin / self.scale)
+
+        if not self.perchannel:
+            tmp = shape[0]
+            self.scale = self.scale.repeat(tmp)
+            self.zero = self.zero.repeat(tmp)
+
+        shape = [-1] + [1] * (len(shape) - 1)
+        self.scale = self.scale.reshape(shape)
+        self.zero = self.zero.reshape(shape)
+
+    def quantize(self, x):
+        """Apply quantization and dequantization to the input tensor.
+
+        Args:
+            x: Input tensor to be quantized.
+
+        Returns:
+            Quantized and dequantized tensor.
+        """
+        x_dtype = x.dtype
+        if self.ready():
+            return asym_quant_dequant(x, self.scale, self.zero, self.maxq).to(x_dtype)
+        return x
+
+    def enabled(self):
+        """Check if quantizer is enabled."""
+        return self.maxq > 0
+
+    def ready(self):
+        """Check if quantizer parameters are ready."""
+        return torch.all(self.scale != 0)

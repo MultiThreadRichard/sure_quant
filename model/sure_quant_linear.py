@@ -15,21 +15,21 @@ class SureQuantLinear(nn.Module):
 
     Args:
         linear: Original ``nn.Linear`` layer.
-        activation_quantizer: A ``SureQuantizer`` instance for activations.
-        weight_quantizer: Optional ``SureQuantizer`` instance for weights.
+        activation_quantizer: A quantizer instance for activations (SureQuantizer or similar).
+        weight_quantizer: Optional quantizer instance for weights.
     """
 
-    def __init__(self, linear: nn.Linear, activation_quantizer: SureQuantizer, weight_quantizer: SureQuantizer = None):
+    def __init__(self, linear: nn.Linear, activation_quantizer: nn.Module, weight_quantizer: nn.Module = None):
         super().__init__()
         if linear.in_features != activation_quantizer.dim:
             raise ValueError(
                 f"Linear in_features={linear.in_features} must match "
-                f"activation SureQuantizer dim={activation_quantizer.dim}"
+                f"activation quantizer dim={activation_quantizer.dim}"
             )
         if weight_quantizer is not None and linear.out_features != weight_quantizer.dim:
             raise ValueError(
                 f"Linear out_features={linear.out_features} must match "
-                f"weight SureQuantizer dim={weight_quantizer.dim}"
+                f"weight quantizer dim={weight_quantizer.dim}"
             )
         
         self.linear = linear
@@ -45,8 +45,10 @@ class SureQuantLinear(nn.Module):
             
             weight_data_cpu = weight_data.detach().cpu()
             weight_data_t = weight_data_cpu.T.contiguous()
-            
+
             self.weight_quantizer = self.weight_quantizer.cpu()
+            # weight_data_t = weight_data.T.contiguous()
+
             self.weight_quantizer.eval()
             
             with torch.no_grad():
