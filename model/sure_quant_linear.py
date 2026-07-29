@@ -15,21 +15,21 @@ class SureQuantLinear(nn.Module):
 
     Args:
         linear: Original ``nn.Linear`` layer.
-        activation_quantizer: A quantizer instance for activations (SureQuantizer or similar).
-        weight_quantizer: Optional quantizer instance for weights.
+        activation_quantizer: A ``SureQuantizer`` instance for activations.
+        weight_quantizer: Optional ``SureQuantizer`` instance for weights.
     """
 
-    def __init__(self, linear: nn.Linear, activation_quantizer: nn.Module, weight_quantizer: nn.Module = None):
+    def __init__(self, linear: nn.Linear, activation_quantizer: SureQuantizer, weight_quantizer: SureQuantizer = None):
         super().__init__()
         if linear.in_features != activation_quantizer.dim:
             raise ValueError(
                 f"Linear in_features={linear.in_features} must match "
-                f"activation quantizer dim={activation_quantizer.dim}"
+                f"activation SureQuantizer dim={activation_quantizer.dim}"
             )
         if weight_quantizer is not None and linear.out_features != weight_quantizer.dim:
             raise ValueError(
                 f"Linear out_features={linear.out_features} must match "
-                f"weight quantizer dim={weight_quantizer.dim}"
+                f"weight SureQuantizer dim={weight_quantizer.dim}"
             )
         
         self.linear = linear
@@ -37,27 +37,23 @@ class SureQuantLinear(nn.Module):
         self.weight_quantizer = weight_quantizer
 
     def quantize_weight(self):
-        """Apply rotation quantization to weight and update linear layer."""
-        if self.weight_quantizer is not None:
-            weight_data = self.linear.weight.data
-            orig_device = weight_data.device
-            orig_dtype = weight_data.dtype
-            
-            weight_data_cpu = weight_data.detach().cpu()
-            weight_data_t = weight_data_cpu.T.contiguous()
+        """Quantize the weight on its current device and update it in place."""
+        if self.weight_quantizer is None:
+            return
 
-            self.weight_quantizer = self.weight_quantizer.cpu()
-            # weight_data_t = weight_data.T.contiguous()
+        weight = self.linear.weight
+        device = weight.device
+        dtype = weight.dtype
 
-            self.weight_quantizer.eval()
-            
-            with torch.no_grad():
-                out_dict = self.weight_quantizer(weight_data_t)
-            
-            quantized_weight_t = out_dict["x_hat"]
-            quantized_weight = quantized_weight_t.T.contiguous()
-            quantized_weight = quantized_weight.to(orig_device).to(orig_dtype)
-            self.linear.weight.data = quantized_weight
+        # Keep calibration/inference on the same accelerator as the linear
+        # weight. ``to(device=...)`` preserves the quantizer's compute dtype.
+        self.weight_quantizer.to(device=device)
+        self.weight_quantizer.eval()
+
+        with torch.no_grad():
+            weight_t = weight.detach().T.contiguous()
+            quantized_weight = self.weight_quantizer(weight_t)["x_hat"].T
+            weight.copy_(quantized_weight.to(device=device, dtype=dtype))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply rotation quantization to input, then the linear layer.

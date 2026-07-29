@@ -223,37 +223,42 @@ def eval_reconstruction_mse(rq: SureQuantizer, x: torch.Tensor):
     return mse
 
 
-def calibrate_weight_rotation(weight_quantizer, weight_data, cfg):
-    """校准权重旋转量化器（使用 SureQuantizer，在 CPU 上执行以节省 GPU 内存）
-
-    特别注意：该步骤在 GPU 上容易因显存不足触发 OOM，因此当前临时改为 CPU 执行。
-    代价是整个量化校准流程会非常慢，完整流程可能超过 10+ 小时。
+def calibrate_weight_rotation(
+    weight_quantizer,
+    weight_data,
+    cfg,
+    device: torch.device,
+):
+    """校准权重旋转量化器（在指定 GPU/device 上执行）。
 
     Args:
         weight_quantizer: SureQuantizer 实例
         weight_data: 原始权重数据 [out_features, in_features]
         cfg: 校准配置
+        device: 权重校准执行设备
 
     Returns:
         dict: 校准日志
     """
-    # 特别注意：GPU 显存不足会导致量化校准阶段 OOM，故此处强制使用 CPU 训练。
-    # 该临时方案会显著增加总耗时，完整量化校准流程可能超过 10+ 小时。
-    cpu_device = torch.device("cpu")
-    weight_quantizer = weight_quantizer.to(cpu_device)
+    weight_quantizer = weight_quantizer.to(device=device)
     weight_quantizer.train()
 
     optimizer = torch.optim.AdamW(weight_quantizer.rotation.parameters(), lr=cfg.calibration_lr)
 
     logs = {"weight_rec": []}
 
-    weight_data_t = weight_data.cpu().T.contiguous()
+    parameter = next(weight_quantizer.parameters(), None)
+    compute_dtype = parameter.dtype if parameter is not None else weight_data.dtype
+    weight_data_t = (
+        weight_data.detach()
+        .to(device=device, dtype=compute_dtype)
+        .T.contiguous()
+    )
 
     for step in range(cfg.calibration_steps):
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
         out_dict = weight_quantizer(weight_data_t)
-        w_hat = out_dict["x_hat"]
         w_blk = out_dict["x_blk"]
         w_hat_blk = out_dict["x_hat_blk"]
 
@@ -262,10 +267,18 @@ def calibrate_weight_rotation(weight_quantizer, weight_data, cfg):
         rec_loss.backward()
         optimizer.step()
 
-        logs["weight_rec"].append(rec_loss.item())
+        rec_value = rec_loss.item()
+        logs["weight_rec"].append(rec_value)
 
         if step % max(1, cfg.calibration_steps // 5) == 0:
-            print(f"    Weight calibration step {step+1}/{cfg.calibration_steps}, rec={rec_loss.item():.6f}")
+            print(
+                f"    Weight calibration step {step+1}/{cfg.calibration_steps}, "
+                f"rec={rec_value:.6f}"
+            )
+
+        # Do not retain several full weight-shaped outputs while the next
+        # iteration allocates its forward activations on the GPU.
+        del out_dict, w_blk, w_hat_blk, rec_loss
 
     weight_quantizer.eval()
     return logs
@@ -280,26 +293,18 @@ def calibrate_all_quantizers(
     if cfg is None:
         cfg = SureQuantConfig()
 
-    device = next(quantized_model.parameters()).device
     logs_dict = {}
-
-    import psutil
 
     layer_count = 0
     total_layers = sum(1 for _, m in quantized_model.named_modules() if isinstance(m, SureQuantLinear))
 
     for name, module in quantized_model.named_modules():
         if isinstance(module, SureQuantLinear):
+            # Use the layer-local device so this also works with a sharded
+            # model instead of assuming all layers follow the first parameter.
+            device = module.linear.weight.device
             layer_count += 1
             print(f"SureQuantLinear name: {name} ({layer_count}/{total_layers})")
-
-            cpu_mem = psutil.Process().memory_info().rss / 1e9
-            print(f"  CPU memory: {cpu_mem:.2f}GB")
-
-            if device.type == 'cuda':
-                mem_allocated = torch.cuda.memory_allocated(device) / 1e9
-                mem_reserved = torch.cuda.memory_reserved(device) / 1e9
-                print(f"  GPU memory: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB")
 
             layer_logs = {}
 
@@ -328,8 +333,13 @@ def calibrate_all_quantizers(
             if module.weight_quantizer is not None:
                 print(f"\n===== Calibrating weight quantizer for {name} =====")
                 try:
-                    weight_data = module.linear.weight.data
-                    weight_logs = calibrate_weight_rotation(module.weight_quantizer, weight_data, cfg)
+                    weight_data = module.linear.weight.detach()
+                    weight_logs = calibrate_weight_rotation(
+                        module.weight_quantizer,
+                        weight_data,
+                        cfg,
+                        device=device,
+                    )
                     layer_logs["weight"] = weight_logs
 
                     module.quantize_weight()
@@ -346,9 +356,6 @@ def calibrate_all_quantizers(
 
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
-                mem_allocated_after = torch.cuda.memory_allocated(device) / 1e9
-                mem_reserved_after = torch.cuda.memory_reserved(device) / 1e9
-                print(f"  GPU memory after empty_cache: allocated={mem_allocated_after:.2f}GB, reserved={mem_reserved_after:.2f}GB")
 
     print(f">>>>>>>>  Calibration completed")
     return logs_dict
@@ -519,7 +526,7 @@ def example_calib():
     cfg = make_cfg()
     cfg.num_bits = 4
     cfg.block_size = 128
-    cfg.calibration_steps = 3
+    cfg.calibration_steps = 100
     cfg.calibration_batch_size = 128
     cfg.calibration_lr = 0.005
     cfg.rotation_strategy = "rotation"

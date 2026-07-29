@@ -96,6 +96,36 @@ def build_butterfly_pairs(block_size: int) -> List[Tuple[int, int]]:
     return pairs
 
 
+def build_non_overlapping_pair_groups(
+    pairs: List[Tuple[int, int]],
+) -> List[List[int]]:
+    """Partition consecutive pairs into groups that can run in parallel.
+
+    A new group starts as soon as a pair reuses a coordinate from the current
+    group.  Keeping groups contiguous is important: non-adjacent rotations
+    cannot in general be reordered even when their own coordinates are
+    disjoint, because rotations between them may introduce dependencies.
+
+    Returns:
+        Pair indices for each consecutive, non-overlapping group.
+    """
+    groups: List[List[int]] = []
+    current: List[int] = []
+    used = set()
+
+    for k, (p, q) in enumerate(pairs):
+        if current and (p in used or q in used):
+            groups.append(current)
+            current = []
+            used = set()
+        current.append(k)
+        used.update((p, q))
+
+    if current:
+        groups.append(current)
+    return groups
+
+
 class BlockGivensRotation(nn.Module):
     """Per‑block learnable Givens rotation.
 
@@ -128,8 +158,15 @@ class BlockGivensRotation(nn.Module):
 
         if pairs is None:
             pairs = build_butterfly_pairs(block_size)
+        # These non-persistent buffers avoid rebuilding tiny CUDA index tensors
+        # on every call. Pair topology is already serialized separately.
+        self.register_buffer(
+            "_pair_p", torch.empty(0, dtype=torch.long), persistent=False
+        )
+        self.register_buffer(
+            "_pair_q", torch.empty(0, dtype=torch.long), persistent=False
+        )
         self.pairs = pairs
-        self.num_pairs = len(pairs)
 
         # Initialise all angles to zero → initial rotation = identity.
         # This ensures that training starts from a known good point where
@@ -137,14 +174,45 @@ class BlockGivensRotation(nn.Module):
         theta = torch.zeros(num_blocks, self.num_pairs, dtype=torch.float32)
         self.theta = nn.Parameter(theta)
 
-    def _apply_once(
-        self, x: torch.Tensor, k: int, inverse: bool = False
-    ) -> torch.Tensor:
-        """Apply the k‑th Givens pair to every block in the batch.
+    @property
+    def pairs(self) -> List[Tuple[int, int]]:
+        return self._pairs
 
-        This is a batched, vectorised operation: for a single pair (p,q),
-        we simultaneously rotate coordinates p and q in all M blocks for
-        all N vectors in the batch.
+    @pairs.setter
+    def pairs(self, pairs: List[Tuple[int, int]]) -> None:
+        """Update pair topology and all derived execution metadata."""
+        pairs = list(pairs)
+        if hasattr(self, "theta") and len(pairs) != self.theta.shape[1]:
+            raise ValueError(
+                "Cannot change the number of Givens pairs after theta is created: "
+                f"expected {self.theta.shape[1]}, got {len(pairs)}"
+            )
+
+        self._pairs = pairs
+        self.num_pairs = len(pairs)
+        self.pair_groups = build_non_overlapping_pair_groups(pairs)
+        self._pair_group_ranges = [
+            (group[0], group[-1] + 1) for group in self.pair_groups
+        ]
+
+        # Preserve the current device when checkpoints replace the topology
+        # after the module has already been moved to CUDA.
+        device = self._pair_p.device
+        self._pair_p = torch.tensor(
+            [p for p, _ in pairs], dtype=torch.long, device=device
+        )
+        self._pair_q = torch.tensor(
+            [q for _, q in pairs], dtype=torch.long, device=device
+        )
+
+    def _apply_group_in_place(
+        self, y: torch.Tensor, start: int, end: int, inverse: bool = False
+    ) -> None:
+        """Apply a consecutive group of disjoint pairs to a work tensor.
+
+        ``index_select`` deliberately materializes the selected coordinates.
+        They therefore remain valid for autograd while ``y`` is updated in
+        place, allowing the full input to be cloned only once per call.
 
         The 2×2 rotation kernel is:
             [ xp' ]   [  cos θ_k   −sin θ_k ] [ xp ]
@@ -154,36 +222,45 @@ class BlockGivensRotation(nn.Module):
         therefore transposes the 2×2 matrix.
 
         Args:
-            x: ``[N, M, g]`` — batch of block‑partitioned vectors.
-            k: Index into ``self.pairs`` selecting which pair to apply.
+            y: ``[N, M, g]`` work tensor, modified in place.
+            start: Inclusive pair index for this group.
+            end: Exclusive pair index for this group.
             inverse: If True, apply Gᵀ (negate θ).
-
-        Returns:
-            New tensor ``[N, M, g]`` with the k‑th rotation applied.
         """
-        p, q = self.pairs[k]
-        # θ shape: [M] — one angle per block
-        theta_k = self.theta[:, k]
+        p = self._pair_p[start:end]
+        q = self._pair_q[start:end]
+        # Shape: [M, P], where P is the number of pairs in this group.
+        theta_k = self.theta[:, start:end]
         if inverse:
             theta_k = -theta_k  # G(p,q,θ)ᵀ = G(p,q,−θ)
 
-        # Precompute cos/sin for all blocks; broadcast over batch dim N.
-        # Shape: [1, M] after unsqueeze → broadcasts to [N, M].
+        # Shape: [1, M, P], broadcast over batch dimension N.
         c = torch.cos(theta_k).unsqueeze(0)
         s = torch.sin(theta_k).unsqueeze(0)
 
-        # Extract the two coordinates being rotated
-        xp = x[:, :, p]  # [N, M]
-        xq = x[:, :, q]  # [N, M]
+        xp = y.index_select(-1, p)
+        xq = y.index_select(-1, q)
 
-        # Apply the 2×2 rotation
         new_p = c * xp - s * xq
         new_q = s * xp + c * xq
 
-        # Clone to avoid in‑place mutation of the input graph
+        # index_copy_ requires matching dtypes; the old slice assignment
+        # implicitly performed this cast for mixed-precision inputs.
+        y.index_copy_(-1, p, new_p.to(dtype=y.dtype))
+        y.index_copy_(-1, q, new_q.to(dtype=y.dtype))
+
+    def _apply_pair_groups(self, x: torch.Tensor, inverse: bool) -> torch.Tensor:
+        # One full-size allocation replaces one clone per Givens pair. The
+        # selected coordinate copies are required to keep in-place updates
+        # safe for autograd.
         y = x.clone()
-        y[:, :, p] = new_p
-        y[:, :, q] = new_q
+        ranges = (
+            reversed(self._pair_group_ranges)
+            if inverse
+            else self._pair_group_ranges
+        )
+        for start, end in ranges:
+            self._apply_group_in_place(y, start, end, inverse=inverse)
         return y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -203,10 +280,7 @@ class BlockGivensRotation(nn.Module):
             raise ValueError(
                 f"Expected shape (N, {self.num_blocks}, {self.block_size}), got {x.shape}"
             )
-        y = x
-        for k in range(self.num_pairs):
-            y = self._apply_once(y, k, inverse=False)
-        return y
+        return self._apply_pair_groups(x, inverse=False)
 
     def inverse(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the inverse (transpose) rotation.
@@ -227,8 +301,6 @@ class BlockGivensRotation(nn.Module):
             raise ValueError(
                 f"Expected shape (N, {self.num_blocks}, {self.block_size}), got {x.shape}"
             )
-        y = x
-        # Reverse order: R⁻¹ = G_0ᵀ · G_1ᵀ · … · G_{K-1}ᵀ
-        for k in reversed(range(self.num_pairs)):
-            y = self._apply_once(y, k, inverse=True)
-        return y
+        # Pairs within a group are disjoint and commute, so only group order
+        # needs to be reversed.
+        return self._apply_pair_groups(x, inverse=True)

@@ -7,7 +7,7 @@ from ops.block_ops import blockify, deblockify
 from ops.hadamard import BlockHadamardTransform
 from ops.givens import BlockGivensRotation
 from model.wrappers import CompositeBlockRotation, StiefelHouseholderRotation
-from quant.fake_quant import BlockUniformQuantizer, WeightQuantizer
+from quant.fake_quant import BlockUniformQuantizer
 
 
 class HadamardOnlyQuantizer(nn.Module):
@@ -173,59 +173,4 @@ class SureQuantizer(nn.Module):
             "x_hat_blk": x_hat_blk,
             "x_hat": x_hat,
             "scale": scale,
-        }
-
-
-class WeightCalibFreeQuantizer(nn.Module):
-    """Weight quantization without calibration, using only BlockHadamardTransform.
-
-    This quantizer is designed for weight-only quantization without requiring
-    calibration. It uses fixed BlockHadamardTransform for rotation and
-    WeightQuantizer for asymmetric int4 quantization.
-
-    Args:
-        dim: Input dimension ``D``.
-        block_size: Block size ``g`` (must be power of two).
-        num_bits: Quantization bit-width (default: 4).
-    """
-
-    def __init__(self, dim: int, block_size: int, num_bits: int = 4):
-        super().__init__()
-        if dim % block_size != 0:
-            raise ValueError(f"dim={dim} must be divisible by block_size={block_size}")
-
-        self.dim = dim
-        self.block_size = block_size
-        self.num_blocks = dim // block_size
-        self.num_bits = num_bits
-
-        # Fixed to use only BlockHadamardTransform
-        self.rotation = BlockHadamardTransform(self.block_size, self.num_blocks)
-        # Use WeightQuantizer for asymmetric quantization
-        # Initialize with num_blocks to match the expected scale shape during loading
-        self.quantizer = WeightQuantizer(shape=(self.block_size, 1))
-
-    def forward(self, x: torch.Tensor):
-        if x.dim() != 2 or x.shape[1] != self.dim:
-            raise ValueError(f"Expected x of shape [N, {self.dim}], got {x.shape}")
-
-        x_blk = blockify(x, self.block_size)
-        z = self.rotation(x_blk)
-        
-        # Find quantization parameters and apply quantization
-        z_flat = z.flatten(0, 1)  # [N*M, g]
-        self.quantizer.find_params(z_flat.t())  # [g, N*M] -> process per channel
-        z_hat_flat = self.quantizer.quantize(z_flat.t()).t()  # [g, N*M] -> [N*M, g]
-        z_hat = z_hat_flat.view_as(z)  # [N, M, g]
-        
-        x_hat_blk = self.rotation.inverse(z_hat)
-        x_hat = deblockify(x_hat_blk)
-
-        return {
-            "x_blk": x_blk,
-            "z": z,
-            "z_hat": z_hat,
-            "x_hat_blk": x_hat_blk,
-            "x_hat": x_hat,
-            "scale": self.quantizer.scale,
         }

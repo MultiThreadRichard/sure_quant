@@ -1,6 +1,10 @@
 from .block_ops import blockify, deblockify
 from .hadamard import BlockHadamardTransform, fwht_lastdim
-from .givens import BlockGivensRotation, build_butterfly_pairs
+from .givens import (
+    BlockGivensRotation,
+    build_butterfly_pairs,
+    build_non_overlapping_pair_groups,
+)
 
 __all__ = [
     "blockify",
@@ -9,4 +13,5 @@ __all__ = [
     "fwht_lastdim",
     "BlockGivensRotation",
     "build_butterfly_pairs",
+    "build_non_overlapping_pair_groups",
 ]
