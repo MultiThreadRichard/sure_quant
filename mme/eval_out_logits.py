@@ -167,549 +167,547 @@ def compute_pearson_correlation(x: torch.Tensor, y: torch.Tensor):
     return pcc.item()
 
 
-def get_compressed_model(model_path, processor):
-    # Load model. MXFP4 要求全精度加载 torch_dtype=torch.float32
-    # 在 float16 下，指数位的表示范围较窄，容易在这些中间计算步骤中产生溢出或严重的舍入误差。
-    # model_path = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
+# def get_compressed_model(model_path, processor):
+#     # Load model. MXFP4 要求全精度加载 torch_dtype=torch.float32
+#     # 在 float16 下，指数位的表示范围较窄，容易在这些中间计算步骤中产生溢出或严重的舍入误差。
+#     # model_path = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
 
-    model = LlavaForConditionalGeneration.from_pretrained(
-        model_path, device_map='auto', torch_dtype=torch.float32
-    )
-    model.eval()
+#     model = LlavaForConditionalGeneration.from_pretrained(
+#         model_path, device_map='auto', torch_dtype=torch.float32
+#     )
+#     model.eval()
     
 
-    # Oneshot arguments
-    # DATASET_ID = "flickr30k"
+#     # Oneshot arguments
+#     # DATASET_ID = "flickr30k"
 
-    DATASET_SPLIT = "test"
-    NUM_CALIBRATION_SAMPLES = 128
-    # NUM_CALIBRATION_SAMPLES = 512
-    MAX_SEQUENCE_LENGTH = 2048
+#     DATASET_SPLIT = "test"
+#     NUM_CALIBRATION_SAMPLES = 128
+#     # NUM_CALIBRATION_SAMPLES = 512
+#     MAX_SEQUENCE_LENGTH = 2048
 
 
-    # 加载本地数据集
-    data_path_list = [
-        '/home/ccwan/stu_Jiangtp/data/flickr30k/test-00000-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00000-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00001-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00002-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00003-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00004-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00005-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00006-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00007-of-00009.parquet',
-        # '/home/ecnu01/workspace/data/flickr30k/data/test-00008-of-00009.parquet',
-    ]
-    # for data_path in data_path_list:
-    #     dataset, messages = load_dataset_from_local(data_path)
-    # dataset, messages = load_dataset_from_local(data_path_list[0])
+#     # 加载本地数据集
+#     data_path_list = [
+#         '/home/ccwan/stu_Jiangtp/data/flickr30k/test-00000-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00000-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00001-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00002-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00003-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00004-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00005-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00006-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00007-of-00009.parquet',
+#         # '/home/ecnu01/workspace/data/flickr30k/data/test-00008-of-00009.parquet',
+#     ]
+#     # for data_path in data_path_list:
+#     #     dataset, messages = load_dataset_from_local(data_path)
+#     # dataset, messages = load_dataset_from_local(data_path_list[0])
 
-    def preprocess_fn(example):
-        # 根据你提供的特征结构：'image' 是图片对象, 'caption' 是文本列表或字符串
-        image = example["image"]
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Please describe this image\n"},
-                    {"type": "image"},
-                ],
-            },
-        ]
+#     def preprocess_fn(example):
+#         # 根据你提供的特征结构：'image' 是图片对象, 'caption' 是文本列表或字符串
+#         image = example["image"]
+#         messages = [
+#             {
+#                 "role": "user",
+#                 "content": [
+#                     {"type": "text", "text": "Please describe this image\n"},
+#                     {"type": "image"},
+#                 ],
+#             },
+#         ]
         
-        prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-        inputs = processor(images=image, text=prompt, return_tensors="pt")
+#         prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+#         inputs = processor(images=image, text=prompt, return_tensors="pt")
 
-        # # Flickr30k 的 caption 通常是列表，取第一个即可
-        # text = example["caption"][0] if isinstance(example["caption"], list) else example["caption"]
+#         # # Flickr30k 的 caption 通常是列表，取第一个即可
+#         # text = example["caption"][0] if isinstance(example["caption"], list) else example["caption"]
         
-        # # 构造 LLaVA 标准提示词格式
-        # prompt = f"USER: <image>\n{text}\nASSISTANT:"
+#         # # 构造 LLaVA 标准提示词格式
+#         # prompt = f"USER: <image>\n{text}\nASSISTANT:"
         
-        # # 处理成模型输入格式
-        # inputs = processor(text=prompt, images=image, return_tensors="pt", padding=True)
+#         # # 处理成模型输入格式
+#         # inputs = processor(text=prompt, images=image, return_tensors="pt", padding=True)
 
-        return {
-            "input_ids": inputs["input_ids"],
-            "pixel_values": inputs["pixel_values"].squeeze(0),
-            "attention_mask": inputs["attention_mask"],
-        }
+#         return {
+#             "input_ids": inputs["input_ids"],
+#             "pixel_values": inputs["pixel_values"].squeeze(0),
+#             "attention_mask": inputs["attention_mask"],
+#         }
 
-    calib_dataset = load_dataset('parquet', data_files=data_path_list[0], split='train')
-    # print(f'calib_dataset.column_names: {calib_dataset.column_names}')
-    # pre_func(calib_dataset[0])
+#     calib_dataset = load_dataset('parquet', data_files=data_path_list[0], split='train')
+#     # print(f'calib_dataset.column_names: {calib_dataset.column_names}')
+#     # pre_func(calib_dataset[0])
 
-    # 转换为校准格式
-    calib_dataset = calib_dataset.map(preprocess_fn, remove_columns=calib_dataset.column_names)
-    calib_dataset.set_format(type="torch", columns=["input_ids", "pixel_values", "attention_mask"])
+#     # 转换为校准格式
+#     calib_dataset = calib_dataset.map(preprocess_fn, remove_columns=calib_dataset.column_names)
+#     calib_dataset.set_format(type="torch", columns=["input_ids", "pixel_values", "attention_mask"])
 
-    # 只取前 128 个样本
-    calib_dataset = calib_dataset.select(range(NUM_CALIBRATION_SAMPLES))
+#     # 只取前 128 个样本
+#     calib_dataset = calib_dataset.select(range(NUM_CALIBRATION_SAMPLES))
 
-    print(f">>>>>>>> load dataset path: {data_path_list[0]}")
-    print(f'len(calib_dataset): {len(calib_dataset)}')
-    print(type(calib_dataset))
+#     print(f">>>>>>>> load dataset path: {data_path_list[0]}")
+#     print(f'len(calib_dataset): {len(calib_dataset)}')
+#     print(type(calib_dataset))
 
-    # for item in calib_dataset:
-    #     # print(item.keys())
-    #     print(type(item['input_ids']))
-    #     print(type(item['pixel_values']))
-    #     print(type(item['attention_mask']))
+#     # for item in calib_dataset:
+#     #     # print(item.keys())
+#     #     print(type(item['input_ids']))
+#     #     print(type(item['pixel_values']))
+#     #     print(type(item['attention_mask']))
 
-    #     print(item['input_ids'].shape)
-    #     print(item['pixel_values'].shape)
-    #     print(item['attention_mask'].shape)
+#     #     print(item['input_ids'].shape)
+#     #     print(item['pixel_values'].shape)
+#     #     print(item['attention_mask'].shape)
 
-    #     break
-
-
-
-    # Select quantization algorithm. In this case, we:
-    #   * apply SmoothQuant to make the activations easier to quantize
-    #   * quantize the weights to int8 with GPTQ (static per channel)
-    #   * quantize the activations to int8 (dynamic per token)
-    # recipe = [
-    #     SmoothQuantModifier(
-    #         smoothing_strength=0.5,
-    #         mappings = [
-    #             # Smooth the inputs going into the query, key, value projections of self-attention
-    #             [["re:.*q_proj", "re:.*k_proj", "re:.*v_proj"], "re:.*input_layernorm"],
-    #             # Smooth the inputs going into the first feed-forward block (fc1)
-    #             [["re:.*gate_proj", "re:.*up_proj"], "re:.*post_attention_layernorm"]
-    #         ],
-    #         ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    #     ),
-    # ]
-
-    # original Recipe
-    # recipe = [
-    #     GPTQModifier(
-    #         targets="Linear",
-    #         scheme="W4A16",
-    #         ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    #     ),
-    # ]
-
-    # ---------------------- FP8 量化配置 ----------------------
-    # FP8_DYNAMIC: 动态 FP8 量化，激活值在运行时计算缩放因子，无需校准
-    # recipe = QuantizationModifier(
-    #     targets="Linear",          # 仅量化 Linear 层
-    #     scheme="FP8_DYNAMIC",      # FP8 动态方案
-    #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    #     # kv_cache_scheme="FP8"      # 可选：KV 缓存也量化为 FP8
-    #     # kv_cache_scheme={
-    #     #     "num_bits": 8,
-    #     #     "type": "float",
-    #     #     "strategy": "tensor",  # 或者根据需要设为 "token"
-    #     #     "symmetric": True
-    #     # }
-    # )
-
-    # 静态 FP8 量化，需校准数据集
-    # recipe = QuantizationModifier(
-    #     targets="Linear",          # 仅量化 Linear 层
-    #     scheme="FP8",      # FP8 动态方案
-    #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    # )
-
-
-    # FP8_BLOCK
-    # recipe = QuantizationModifier(
-    #     targets="Linear",
-    #     scheme="FP8_BLOCK",
-    #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    # )
-
-    # nvfp4
-    # recipe = QuantizationModifier(
-    #     targets="Linear",
-    #     scheme="NVFP4",  # NVIDIA 4位浮点格式
-    #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    # )
-
-    # MXFP4
-    # recipe = QuantizationModifier(
-    #     targets="Linear",
-    #     scheme="MXFP4",  # 实验性 MXFP4 格式
-    #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    # )
-
-    # MXFP4A16
-    recipe = QuantizationModifier(
-        targets="Linear",
-        scheme="MXFP4A16",
-        ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
-    )
-
-    SAVE_DIR = "/home/ccwan/stu_Jiangtp/model_repo/llava-1.5-7b-mxfp4"
-    os.makedirs(SAVE_DIR, exist_ok=True)
-
-
-    # model = model.to(device="cpu", dtype=torch.float32)
-    torch.cuda.empty_cache()
-
-    # Perform oneshot
-    oneshot(
-        model=model,
-        tokenizer=model_path,
-        dataset=None,
-        # splits={"calibration": f"{DATASET_SPLIT}[:{NUM_CALIBRATION_SAMPLES}]"},
-        recipe=recipe,
-        max_seq_length=MAX_SEQUENCE_LENGTH,
-        num_calibration_samples=NUM_CALIBRATION_SAMPLES,
-        trust_remote_code_model=True,
-        sequential_targets=["LlamaDecoderLayer"],
-        output_dir=None,
-    )
-    print(">>>>>>>> oneshot done")
-
-    # print(type(model))
-    # print(model)
-    print(f"Memory footprint: {model.get_memory_footprint() / 1e9:.2f} GB")
-
-    return model
+#     #     break
 
 
 
-def eval_kl_full_qt():
-    # TO MOD
-    data_path_list = [
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
-    ]
+#     # Select quantization algorithm. In this case, we:
+#     #   * apply SmoothQuant to make the activations easier to quantize
+#     #   * quantize the weights to int8 with GPTQ (static per channel)
+#     #   * quantize the activations to int8 (dynamic per token)
+#     # recipe = [
+#     #     SmoothQuantModifier(
+#     #         smoothing_strength=0.5,
+#     #         mappings = [
+#     #             # Smooth the inputs going into the query, key, value projections of self-attention
+#     #             [["re:.*q_proj", "re:.*k_proj", "re:.*v_proj"], "re:.*input_layernorm"],
+#     #             # Smooth the inputs going into the first feed-forward block (fc1)
+#     #             [["re:.*gate_proj", "re:.*up_proj"], "re:.*post_attention_layernorm"]
+#     #         ],
+#     #         ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     #     ),
+#     # ]
 
-    # TO MOD
-    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+#     # original Recipe
+#     # recipe = [
+#     #     GPTQModifier(
+#     #         targets="Linear",
+#     #         scheme="W4A16",
+#     #         ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     #     ),
+#     # ]
 
-    # original model
-    model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
-    processor = AutoProcessor.from_pretrained(checkpoint)
+#     # ---------------------- FP8 量化配置 ----------------------
+#     # FP8_DYNAMIC: 动态 FP8 量化，激活值在运行时计算缩放因子，无需校准
+#     # recipe = QuantizationModifier(
+#     #     targets="Linear",          # 仅量化 Linear 层
+#     #     scheme="FP8_DYNAMIC",      # FP8 动态方案
+#     #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     #     # kv_cache_scheme="FP8"      # 可选：KV 缓存也量化为 FP8
+#     #     # kv_cache_scheme={
+#     #     #     "num_bits": 8,
+#     #     #     "type": "float",
+#     #     #     "strategy": "tensor",  # 或者根据需要设为 "token"
+#     #     #     "symmetric": True
+#     #     # }
+#     # )
 
-    # quantized model
-    qmodel = get_compressed_model(checkpoint, processor)
+#     # 静态 FP8 量化，需校准数据集
+#     # recipe = QuantizationModifier(
+#     #     targets="Linear",          # 仅量化 Linear 层
+#     #     scheme="FP8",      # FP8 动态方案
+#     #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     # )
 
-    # print(type(model))
-    # print(model.config.model_type)
 
-    print('>>>>>>>>>>>>> load model done.')
+#     # FP8_BLOCK
+#     # recipe = QuantizationModifier(
+#     #     targets="Linear",
+#     #     scheme="FP8_BLOCK",
+#     #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     # )
 
-    # TO MOD
-    output_path = '/home/ccwan/stu_Jiangtp/llm-compress-learn/mme_logits_eval'
-    os.makedirs(output_path, exist_ok=True)
+#     # nvfp4
+#     # recipe = QuantizationModifier(
+#     #     targets="Linear",
+#     #     scheme="NVFP4",  # NVIDIA 4位浮点格式
+#     #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     # )
 
-    output_filename = f'out_logits_kl_full_qt.txt'
+#     # MXFP4
+#     # recipe = QuantizationModifier(
+#     #     targets="Linear",
+#     #     scheme="MXFP4",  # 实验性 MXFP4 格式
+#     #     ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     # )
 
-    turn = 0
-    score_list = []
+#     # MXFP4A16
+#     recipe = QuantizationModifier(
+#         targets="Linear",
+#         scheme="MXFP4A16",
+#         ignore=["re:.*lm_head", "re:.*vision_tower.*", "re:.*multi_modal_projector.*"],
+#     )
 
-    t_benchmark_start = time.time()
-    for data_path in data_path_list:
-        t_data, messages = load_dataset_from_local(data_path)
-        print(f'>>>>>>>>> load {data_path}')
-        # break
+#     SAVE_DIR = "/home/ccwan/stu_Jiangtp/model_repo/llava-1.5-7b-mxfp4"
+#     os.makedirs(SAVE_DIR, exist_ok=True)
 
-        print('>>>>>>>>> start eval')
-        mode = 'a'
-        with open(os.path.join(output_path, output_filename), mode, encoding="utf-8") as fout:
-            unk = 0
-            for item, msg_item in tqdm(zip(t_data, messages)):
-                # torch.cuda.empty_cache()
 
-                # 使用 processor 处理输入
-                text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = process_vision_info(msg_item)
-                inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                ).to("cuda")
+#     # model = model.to(device="cpu", dtype=torch.float32)
+#     torch.cuda.empty_cache()
+
+#     # Perform oneshot
+#     oneshot(
+#         model=model,
+#         tokenizer=model_path,
+#         dataset=None,
+#         # splits={"calibration": f"{DATASET_SPLIT}[:{NUM_CALIBRATION_SAMPLES}]"},
+#         recipe=recipe,
+#         max_seq_length=MAX_SEQUENCE_LENGTH,
+#         num_calibration_samples=NUM_CALIBRATION_SAMPLES,
+#         trust_remote_code_model=True,
+#         sequential_targets=["LlamaDecoderLayer"],
+#         output_dir=None,
+#     )
+#     print(">>>>>>>> oneshot done")
+
+#     # print(type(model))
+#     # print(model)
+#     print(f"Memory footprint: {model.get_memory_footprint() / 1e9:.2f} GB")
+
+#     return model
+
+
+
+# def eval_kl_full_qt():
+#     # TO MOD
+#     data_path_list = [
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
+#     ]
+
+#     # TO MOD
+#     checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+
+#     # original model
+#     model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
+#     processor = AutoProcessor.from_pretrained(checkpoint)
+
+#     # quantized model
+#     qmodel = get_compressed_model(checkpoint, processor)
+
+#     # print(type(model))
+#     # print(model.config.model_type)
+
+#     print('>>>>>>>>>>>>> load model done.')
+
+#     # TO MOD
+#     output_path = '/home/ccwan/stu_Jiangtp/llm-compress-learn/mme_logits_eval'
+#     os.makedirs(output_path, exist_ok=True)
+
+#     output_filename = f'out_logits_kl_full_qt.txt'
+
+#     turn = 0
+#     score_list = []
+
+#     t_benchmark_start = time.time()
+#     for data_path in data_path_list:
+#         t_data, messages = load_dataset_from_local(data_path)
+#         print(f'>>>>>>>>> load {data_path}')
+#         # break
+
+#         print('>>>>>>>>> start eval')
+#         mode = 'a'
+#         with open(os.path.join(output_path, output_filename), mode, encoding="utf-8") as fout:
+#             unk = 0
+#             for item, msg_item in tqdm(zip(t_data, messages)):
+#                 # torch.cuda.empty_cache()
+
+#                 # 使用 processor 处理输入
+#                 text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
+#                 image_inputs, video_inputs = process_vision_info(msg_item)
+#                 inputs = processor(
+#                     text=[text],
+#                     images=image_inputs,
+#                     videos=video_inputs,
+#                     padding=True,
+#                     return_tensors="pt"
+#                 ).to("cuda")
                 
-                # print(inputs)
-                # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
-                # print(inputs.keys())
-                # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
-                # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
-                # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
-                # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
+#                 # print(inputs)
+#                 # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
+#                 # print(inputs.keys())
+#                 # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
+#                 # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
+#                 # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
+#                 # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
 
-                generated_ids = model.generate(**inputs, max_new_tokens=256)
-                # print(generated_ids)
-                # print(f"generated_ids.shape: {generated_ids.shape}")
-                # print(f"generated_ids.dtype: {generated_ids.dtype}")
+#                 generated_ids = model.generate(**inputs, max_new_tokens=256)
+#                 # print(generated_ids)
+#                 # print(f"generated_ids.shape: {generated_ids.shape}")
+#                 # print(f"generated_ids.dtype: {generated_ids.dtype}")
 
-                q_gen_ids = qmodel.generate(**inputs, max_new_tokens=256)
-                # print(q_gen_ids)
-                # print(f"generated_ids.shape: {q_gen_ids.shape}")
-                # print(f"generated_ids.dtype: {q_gen_ids.dtype}")
+#                 q_gen_ids = qmodel.generate(**inputs, max_new_tokens=256)
+#                 # print(q_gen_ids)
+#                 # print(f"generated_ids.shape: {q_gen_ids.shape}")
+#                 # print(f"generated_ids.dtype: {q_gen_ids.dtype}")
 
-                logits_full, logits_quant = preprocess_before_kl(generated_ids[0], q_gen_ids[0])
-                print(f"logits_full shape: {logits_full.shape}")
-                print(f"logits_quant shape: {logits_quant.shape}")
+#                 logits_full, logits_quant = preprocess_before_kl(generated_ids[0], q_gen_ids[0])
+#                 print(f"logits_full shape: {logits_full.shape}")
+#                 print(f"logits_quant shape: {logits_quant.shape}")
 
-                min_val = min(logits_full.min(), logits_quant.min())
-                max_val = max(logits_full.max(), logits_quant.max())
-                print("min_val: ", min_val)
-                print("max_val: ", max_val)
+#                 min_val = min(logits_full.min(), logits_quant.min())
+#                 max_val = max(logits_full.max(), logits_quant.max())
+#                 print("min_val: ", min_val)
+#                 print("max_val: ", max_val)
 
-                score = compute_kl_for_quantization(logits_full, logits_quant)
+#                 score = compute_kl_for_quantization(logits_full, logits_quant)
 
-                # print(score, file=fout)
+#                 # print(score, file=fout)
 
-                score_list.append(score)
+#                 score_list.append(score)
 
-                # response = processor.batch_decode(
-                #     generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                # )
-                # print("Generated Response: ", response)
+#                 # response = processor.batch_decode(
+#                 #     generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+#                 # )
+#                 # print("Generated Response: ", response)
 
-                # qresp = processor.batch_decode(
-                #     q_gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                # )
-                # print("qresp: ", qresp)
+#                 # qresp = processor.batch_decode(
+#                 #     q_gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+#                 # )
+#                 # print("qresp: ", qresp)
 
-                # unk += 1
-                # if unk == 5:
-                #     break
+#                 # unk += 1
+#                 # if unk == 5:
+#                 #     break
 
-                break
+#                 break
         
 
-        print(f'>>>>>>>>> end eval')
-        torch.cuda.empty_cache()
-        turn += 1
-        break
+#         print(f'>>>>>>>>> end eval')
+#         torch.cuda.empty_cache()
+#         turn += 1
+#         break
 
 
-    t_benchmark_end = time.time()
-    avg = average_data_list(score_list)
-    print(f'>>>>>>>>> complete turn: {turn}')
-    print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
-    print(f'>>>>>>>>> average score: {avg}')
-    with open(os.path.join(output_path, output_filename), 'a', encoding="utf-8") as fout:
-        fout.write(f'>>>>>>>>> average score: {avg}')
+#     t_benchmark_end = time.time()
+#     avg = average_data_list(score_list)
+#     print(f'>>>>>>>>> complete turn: {turn}')
+#     print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
+#     print(f'>>>>>>>>> average score: {avg}')
+#     with open(os.path.join(output_path, output_filename), 'a', encoding="utf-8") as fout:
+#         fout.write(f'>>>>>>>>> average score: {avg}')
 
 
-def eval_cos_full_qt():
-    # TO MOD
-    data_path_list = [
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
-    ]
+# def eval_cos_full_qt():
+#     # TO MOD
+#     data_path_list = [
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
+#     ]
 
-    # TO MOD
-    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+#     # TO MOD
+#     checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
 
-    # original model
-    model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
-    processor = AutoProcessor.from_pretrained(checkpoint)
+#     # original model
+#     model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
+#     processor = AutoProcessor.from_pretrained(checkpoint)
 
-    # quantized model
-    qmodel = get_compressed_model(checkpoint, processor)
+#     # quantized model
+#     qmodel = get_compressed_model(checkpoint, processor)
 
-    # print(type(model))
-    # print(model.config.model_type)
+#     # print(type(model))
+#     # print(model.config.model_type)
 
-    print('>>>>>>>>>>>>> load model done.')
+#     print('>>>>>>>>>>>>> load model done.')
 
-    # TO MOD
-    output_path = '/home/ccwan/stu_Jiangtp/llm-compress-learn/mme_logits_eval'
-    os.makedirs(output_path, exist_ok=True)
+#     # TO MOD
+#     output_path = '/home/ccwan/stu_Jiangtp/llm-compress-learn/mme_logits_eval'
+#     os.makedirs(output_path, exist_ok=True)
 
-    output_filename = f'out_logits_cos_full_qt.txt'
+#     output_filename = f'out_logits_cos_full_qt.txt'
 
-    turn = 0
-    score_list = []
+#     turn = 0
+#     score_list = []
 
-    t_benchmark_start = time.time()
-    for data_path in data_path_list:
-        t_data, messages = load_dataset_from_local(data_path)
-        print(f'>>>>>>>>> load {data_path}')
-        # break
+#     t_benchmark_start = time.time()
+#     for data_path in data_path_list:
+#         t_data, messages = load_dataset_from_local(data_path)
+#         print(f'>>>>>>>>> load {data_path}')
+#         # break
 
-        print('>>>>>>>>> start eval')
-        mode = 'a'
-        with open(os.path.join(output_path, output_filename), mode, encoding="utf-8") as fout:
-            for item, msg_item in tqdm(zip(t_data, messages)):
-                # torch.cuda.empty_cache()
+#         print('>>>>>>>>> start eval')
+#         mode = 'a'
+#         with open(os.path.join(output_path, output_filename), mode, encoding="utf-8") as fout:
+#             for item, msg_item in tqdm(zip(t_data, messages)):
+#                 # torch.cuda.empty_cache()
 
-                # 使用 processor 处理输入
-                text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = process_vision_info(msg_item)
-                inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                ).to("cuda")
+#                 # 使用 processor 处理输入
+#                 text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
+#                 image_inputs, video_inputs = process_vision_info(msg_item)
+#                 inputs = processor(
+#                     text=[text],
+#                     images=image_inputs,
+#                     videos=video_inputs,
+#                     padding=True,
+#                     return_tensors="pt"
+#                 ).to("cuda")
                 
-                # print(inputs)
-                # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
-                # print(inputs.keys())
-                # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
-                # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
-                # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
-                # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
+#                 # print(inputs)
+#                 # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
+#                 # print(inputs.keys())
+#                 # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
+#                 # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
+#                 # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
+#                 # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
 
-                generated_ids = model.generate(**inputs, max_new_tokens=256)
-                # print(generated_ids)
-                # print(f"generated_ids.shape: {generated_ids.shape}")
-                # print(f"generated_ids.dtype: {generated_ids.dtype}")
+#                 generated_ids = model.generate(**inputs, max_new_tokens=256)
+#                 # print(generated_ids)
+#                 # print(f"generated_ids.shape: {generated_ids.shape}")
+#                 # print(f"generated_ids.dtype: {generated_ids.dtype}")
 
-                q_gen_ids = qmodel.generate(**inputs, max_new_tokens=256)
-                # print(q_gen_ids)
-                # print(f"generated_ids.shape: {q_gen_ids.shape}")
-                # print(f"generated_ids.dtype: {q_gen_ids.dtype}")
+#                 q_gen_ids = qmodel.generate(**inputs, max_new_tokens=256)
+#                 # print(q_gen_ids)
+#                 # print(f"generated_ids.shape: {q_gen_ids.shape}")
+#                 # print(f"generated_ids.dtype: {q_gen_ids.dtype}")
 
-                score = compute_cos_similarity(generated_ids[0], q_gen_ids[0])
+#                 score = compute_cos_similarity(generated_ids[0], q_gen_ids[0])
 
-                print(score, file=fout)
+#                 print(score, file=fout)
 
-                score_list.append(score)
+#                 score_list.append(score)
 
-                # response = processor.batch_decode(
-                #     generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                # )
-                # print("Generated Response: ", response)
+#                 # response = processor.batch_decode(
+#                 #     generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+#                 # )
+#                 # print("Generated Response: ", response)
 
-                # qresp = processor.batch_decode(
-                #     q_gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                # )
-                # print("qresp: ", qresp)
+#                 # qresp = processor.batch_decode(
+#                 #     q_gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+#                 # )
+#                 # print("qresp: ", qresp)
 
-                # break
+#                 # break
         
 
-        print(f'>>>>>>>>> end eval')
-        torch.cuda.empty_cache()
-        turn += 1
-        break
+#         print(f'>>>>>>>>> end eval')
+#         torch.cuda.empty_cache()
+#         turn += 1
+#         break
 
 
-    t_benchmark_end = time.time()
-    avg = average_data_list(score_list)
-    print(f'>>>>>>>>> complete turn: {turn}')
-    print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
-    print(f'>>>>>>>>> average score: {avg}')
-    with open(os.path.join(output_path, output_filename), 'a', encoding="utf-8") as fout:
-        fout.write(f'>>>>>>>>> average score: {avg}')
+#     t_benchmark_end = time.time()
+#     avg = average_data_list(score_list)
+#     print(f'>>>>>>>>> complete turn: {turn}')
+#     print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
+#     print(f'>>>>>>>>> average score: {avg}')
+#     with open(os.path.join(output_path, output_filename), 'a', encoding="utf-8") as fout:
+#         fout.write(f'>>>>>>>>> average score: {avg}')
 
 
 
-def eval_pearson_full_qt():
-    # TO MOD
-    data_path_list = [
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
-    ]
+# def eval_pearson_full_qt():
+#     # TO MOD
+#     data_path_list = [
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
+#         '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
+#     ]
 
-    # TO MOD
-    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+#     # TO MOD
+#     checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
 
-    # original model
-    model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
-    processor = AutoProcessor.from_pretrained(checkpoint)
+#     # original model
+#     model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
+#     processor = AutoProcessor.from_pretrained(checkpoint)
 
-    # quantized model
-    qmodel = get_compressed_model(checkpoint, processor)
+#     # quantized model
+#     qmodel = get_compressed_model(checkpoint, processor)
 
-    # print(type(model))
-    # print(model.config.model_type)
+#     # print(type(model))
+#     # print(model.config.model_type)
 
-    print('>>>>>>>>>>>>> load model done.')
+#     print('>>>>>>>>>>>>> load model done.')
 
-    # TO MOD
-    output_path = '/home/ccwan/stu_Jiangtp/llm-compress-learn/mme_logits_eval'
-    os.makedirs(output_path, exist_ok=True)
+#     # TO MOD
+#     output_path = '/home/ccwan/stu_Jiangtp/llm-compress-learn/mme_logits_eval'
+#     os.makedirs(output_path, exist_ok=True)
 
-    output_filename = f'out_logits_pearson_full_qt.txt'
+#     output_filename = f'out_logits_pearson_full_qt.txt'
 
-    turn = 0
-    score_list = []
+#     turn = 0
+#     score_list = []
 
-    t_benchmark_start = time.time()
-    for data_path in data_path_list:
-        t_data, messages = load_dataset_from_local(data_path)
-        print(f'>>>>>>>>> load {data_path}')
-        # break
+#     t_benchmark_start = time.time()
+#     for data_path in data_path_list:
+#         t_data, messages = load_dataset_from_local(data_path)
+#         print(f'>>>>>>>>> load {data_path}')
+#         # break
 
-        print('>>>>>>>>> start eval')
-        mode = 'a'
-        with open(os.path.join(output_path, output_filename), mode, encoding="utf-8") as fout:
-            for item, msg_item in tqdm(zip(t_data, messages)):
-                # torch.cuda.empty_cache()
+#         print('>>>>>>>>> start eval')
+#         mode = 'a'
+#         with open(os.path.join(output_path, output_filename), mode, encoding="utf-8") as fout:
+#             for item, msg_item in tqdm(zip(t_data, messages)):
+#                 # torch.cuda.empty_cache()
 
-                # 使用 processor 处理输入
-                text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = process_vision_info(msg_item)
-                inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                ).to("cuda")
+#                 # 使用 processor 处理输入
+#                 text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
+#                 image_inputs, video_inputs = process_vision_info(msg_item)
+#                 inputs = processor(
+#                     text=[text],
+#                     images=image_inputs,
+#                     videos=video_inputs,
+#                     padding=True,
+#                     return_tensors="pt"
+#                 ).to("cuda")
                 
-                # print(inputs)
-                # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
-                # print(inputs.keys())
-                # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
-                # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
-                # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
-                # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
+#                 # print(inputs)
+#                 # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
+#                 # print(inputs.keys())
+#                 # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
+#                 # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
+#                 # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
+#                 # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
 
-                generated_ids = model.generate(**inputs, max_new_tokens=256)
-                # print(generated_ids)
-                # print(f"generated_ids.shape: {generated_ids.shape}")
-                # print(f"generated_ids.dtype: {generated_ids.dtype}")
+#                 generated_ids = model.generate(**inputs, max_new_tokens=256)
+#                 # print(generated_ids)
+#                 # print(f"generated_ids.shape: {generated_ids.shape}")
+#                 # print(f"generated_ids.dtype: {generated_ids.dtype}")
 
-                q_gen_ids = qmodel.generate(**inputs, max_new_tokens=256)
-                # print(q_gen_ids)
-                # print(f"generated_ids.shape: {q_gen_ids.shape}")
-                # print(f"generated_ids.dtype: {q_gen_ids.dtype}")
+#                 q_gen_ids = qmodel.generate(**inputs, max_new_tokens=256)
+#                 # print(q_gen_ids)
+#                 # print(f"generated_ids.shape: {q_gen_ids.shape}")
+#                 # print(f"generated_ids.dtype: {q_gen_ids.dtype}")
 
-                score = compute_pearson_correlation(generated_ids[0], q_gen_ids[0])
+#                 score = compute_pearson_correlation(generated_ids[0], q_gen_ids[0])
 
-                print(score, file=fout)
+#                 print(score, file=fout)
 
-                score_list.append(score)
+#                 score_list.append(score)
 
-                # response = processor.batch_decode(
-                #     generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                # )
-                # print("Generated Response: ", response)
+#                 # response = processor.batch_decode(
+#                 #     generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+#                 # )
+#                 # print("Generated Response: ", response)
 
-                # qresp = processor.batch_decode(
-                #     q_gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                # )
-                # print("qresp: ", qresp)
+#                 # qresp = processor.batch_decode(
+#                 #     q_gen_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+#                 # )
+#                 # print("qresp: ", qresp)
 
-                # break
+#                 # break
         
 
-        print(f'>>>>>>>>> end eval')
-        torch.cuda.empty_cache()
-        turn += 1
-        break
+#         print(f'>>>>>>>>> end eval')
+#         torch.cuda.empty_cache()
+#         turn += 1
+#         break
 
 
-    t_benchmark_end = time.time()
-    avg = average_data_list(score_list)
-    print(f'>>>>>>>>> complete turn: {turn}')
-    print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
-    print(f'>>>>>>>>> average score: {avg}')
-    with open(os.path.join(output_path, output_filename), 'a', encoding="utf-8") as fout:
-        fout.write(f'>>>>>>>>> average score: {avg}')
-
-
+#     t_benchmark_end = time.time()
+#     avg = average_data_list(score_list)
+#     print(f'>>>>>>>>> complete turn: {turn}')
+#     print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
+#     print(f'>>>>>>>>> average score: {avg}')
+#     with open(os.path.join(output_path, output_filename), 'a', encoding="utf-8") as fout:
+#         fout.write(f'>>>>>>>>> average score: {avg}')
 
 
 # main

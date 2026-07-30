@@ -2,9 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import torch
-# import numpy as np
-# from PIL import Image
-
+from fake_quant import quant_utils
 
 
 # -------------------------- 逐维度统计分位数 --------------------------
@@ -98,6 +96,8 @@ def plt_act_val_dim(np_tensor, output_path, title="Before Rot", xlabel="Hidden d
     ax.set_ylabel(ylabel, fontsize=18, labelpad=10)
 
     # ax.set_ylim(-0.48, 0.48)
+    # ax.set_ylim(-10.0, 10.0)
+
     # ax.set_xlim(0, hidden_size)
     ax.tick_params(axis='both', labelsize=16)
 
@@ -116,16 +116,6 @@ def plt_act_val_dim(np_tensor, output_path, title="Before Rot", xlabel="Hidden d
     plt.savefig(output_path, dpi=300)
     print(f"save to {output_path}")
 
-
-# # ===================== 可配置参数 =====================
-# # 模型名称：可替换为 Llama-3、Mistral 等同类架构模型
-# model_name = "meta-llama/Llama-2-7b-hf"
-# layer_idx = 10  # 目标层号，与原图第10层对应
-# # 权重模块路径：可选 q_proj / k_proj / v_proj / o_proj / gate_proj / up_proj / down_proj
-# weight_path = "mlp.gate_proj.weight"
-# # 统计维度：0=按输入维度统计（x轴为输入隐藏维度，和激活图对齐）；1=按输出维度统计
-# stat_axis = 0
-# # ======================================================
 
 
 def plt_llava_lang_weight(model, output_path, stat_axis=0):
@@ -150,13 +140,6 @@ def plt_llava_lang_weight(model, output_path, stat_axis=0):
             plt_range_val_dim(weight_matrix, f"{output_path}/layer_{idx}_{attr_name}_weight.png", title=f"Layer {idx} {attr_name} Weight")
         # break
 
-    # target_module = model.model.layers[layer_idx]
-    # for attr in weight_path.split("."):
-    #     target_module = getattr(target_module, attr)
-    # weight_matrix = target_module.detach().cpu().float().numpy()  # 转float32避免numpy计算精度问题
-    # print(f"权重矩阵形状: {weight_matrix.shape}")
-    # print(f"统计维度：axis={stat_axis}，共 {weight_matrix.shape[stat_axis]} 个维度")
-
 
 def plt_llava_vision_weight(model, output_path, stat_axis=0):
     attr_targets = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.out_proj", 
@@ -164,9 +147,7 @@ def plt_llava_vision_weight(model, output_path, stat_axis=0):
     
     # 从模型中提取权重张量
     for idx, layer in enumerate(model.vision_tower.vision_model.encoder.layers):
-        if idx > 10 and idx < 22:
-            continue
-        # if idx != 22:
+        # if idx > 10 and idx < 22:
         #     continue
 
         for attr_name in attr_targets:
@@ -271,15 +252,146 @@ def collect_llava_vision_input_activations(
 
 def plt_llava_lang_activation(act_list, output_path, stat_axis=0):
     for idx, act in enumerate(act_list):
-        if idx > 10 and idx < 30:
-            continue
+        # if idx > 10 and idx < 30:
+        #     continue
         plt_act_val_dim(act, f"{output_path}/layer_{idx}_input_act.png", title=f"Layer {idx} Input Activation", ylabel="Activation Value")
 
 
 def plt_llava_vision_activation(act_list, output_path, stat_axis=0):
     for idx, act in enumerate(act_list):
-        if idx > 10 and idx < 22:
-            continue
         plt_act_val_dim(act, f"{output_path}/layer_{idx}_input_act.png", title=f"Layer {idx} Input Activation", ylabel="Activation Value")
-    
 
+
+
+def collect_vision_act_quantizer_inputs(model):
+    """
+    捕获模型中所有 ActQuantizer 的 forward 函数输入 x，并按最后一维计算统计量
+    
+    Args:
+        model: LLaVA 模型
+        
+    Returns:
+        dict: 包含每个 ActQuantizer 的统计信息，key 为 quantizer 名称，value 为
+              {'max': np.ndarray, 'min': np.ndarray, 'mean': np.ndarray}
+    """
+    # 查找所有 ActQuantWrapper
+    qlayers = quant_utils.find_qlayers(model.vision_tower.vision_model.encoder.layers, layers=[quant_utils.ActQuantWrapper])
+    print(f"len(qlayers): {len(qlayers)}")
+    
+    stats_dict = {}
+    hook_handles = []
+    
+    def create_hook(name, quantizer_type):
+        def hook(module, input_args, output):
+            x = input_args[0]
+            if x.dim() > 1:
+                # 按最后一维计算统计量
+                x_np = x.detach().cpu().float().numpy()
+                stat_name = f"{name}.{quantizer_type}"
+                
+                if stat_name not in stats_dict:
+                    stats_dict[stat_name] = {
+                        'max': np.zeros(x.shape[-1]),
+                        'min': np.zeros(x.shape[-1]),
+                        'mean': np.zeros(x.shape[-1]),
+                        'count': 0,
+                        'tensor': None
+                    }
+                
+                # 展平除最后一维外的所有维度
+                flattened = x_np.reshape(-1, x_np.shape[-1])
+                
+                # 按最后一维计算统计
+                stats_dict[stat_name]['max'] = np.maximum(
+                    stats_dict[stat_name]['max'],
+                    np.max(flattened, axis=0)
+                )
+                stats_dict[stat_name]['min'] = np.minimum(
+                    stats_dict[stat_name]['min'],
+                    np.min(flattened, axis=0)
+                )
+                stats_dict[stat_name]['mean'] = np.mean(flattened, axis=0)
+                # stats_dict[stat_name]['count'] += 1
+
+                stats_dict[stat_name]['tensor'] = flattened
+
+        return hook
+    
+    # 为每个 ActQuantWrapper 的 quantizer 和 out_quantizer 注册钩子
+    for name, wrapper in qlayers.items():
+        # 输入量化器
+        handle1 = wrapper.quantizer.register_forward_hook(
+            create_hook(name, 'quantizer')
+        )
+        hook_handles.append(handle1)
+        
+        # 输出量化器
+        # handle2 = wrapper.out_quantizer.register_forward_hook(
+        #     create_hook(name, 'out_quantizer')
+        # )
+        # hook_handles.append(handle2)
+    
+    return stats_dict, hook_handles
+
+
+def finalize_stats(stats_dict):
+    """
+    对收集的统计信息进行最终处理（计算平均均值）
+    """
+    layer_input_stats = {}
+    for name in stats_dict:
+        if "self_attn.q_proj" in name:
+            layer_input_stats[name] = stats_dict[name]
+            
+    return layer_input_stats
+
+
+def plt_act_quantizer_tensors(stats_dict, output_path, title_prefix="ActQuantizer(layer input activation)"):
+    idx = 0
+    for name, stats in stats_dict.items():
+        np_act = stats['tensor']
+        print(f"name: {name}")
+
+        name = '_'.join(name.split('.'))
+
+        plt_act_val_dim(np_act, f"{output_path}/layer_{name}.png", title=f"Layer {idx} Input Activation", ylabel="Activation Value")
+        idx += 1
+
+
+def plt_act_quantizer_stats(stats_dict, output_path, title_prefix="ActQuantizer(layer input activation)"):
+    """
+    绘制 ActQuantizer 输入统计的折线图
+    
+    Args:
+        stats_dict: 统计信息字典，由 collect_act_quantizer_input_stats 返回
+        output_path: 输出目录路径
+        title_prefix: 图表标题前缀
+    """
+    
+    for name, stats in stats_dict.items():
+        hidden_size = len(stats['max'])
+        x = np.arange(hidden_size)
+        
+        plt.figure(figsize=(12, 6), dpi=120)
+        ax = plt.gca()
+
+        layer_idx = name.split('.')[0]
+        
+        # 三条折线
+        ax.plot(x, stats['max'], color='#367bc1', label='Max', linewidth=1.0)
+        ax.plot(x, stats['min'], color='#d93a6e', label='Min', linewidth=1.0)
+        ax.plot(x, stats['mean'], color='#f2b138', label='Mean', linewidth=1.0)
+        
+        ax.set_title(f"{title_prefix} - layer {layer_idx}", fontsize=14, pad=15)
+        ax.set_xlabel("Hidden Dimension Index", fontsize=12, labelpad=10)
+        ax.set_ylabel("Value", fontsize=12, labelpad=10)
+        ax.tick_params(axis='both', labelsize=10)
+        ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
+        
+        plt.tight_layout()
+        save_path = f"{output_path}/layer_{layer_idx}_stats.png"
+        plt.savefig(save_path, dpi=300)
+        plt.close()
+        print(f"Saved to {save_path}")
+
+        # break

@@ -22,13 +22,88 @@ from fake_quant import hadamard_utils
 from llava_new import LLaVA
 from fake_quant.llava_rotation import fuse_llava_layer_norms, rotate_llava_model, rotate_vision_pre_layernorm
 from llava_weight_quant_utils import llava_weight_quant_fwrd_plus
-# from llava_kv_quant_turbo import LLaVAInferEngine
 
-from plt_tools import *
 
 
 torch.set_grad_enabled(False)
 
+
+"""
+int4 flickr test
+
+CUDA_VISIBLE_DEVICES=0 python mme/quant_llava_int4_sample.py \
+--model_name /home/ecnu01/workspace/models/llava-1.5-7b-hf \
+--rotate \
+--rotate_visual_clip \
+--rotate_visual_cross_attn \
+--rotate_llm \
+--visual_w_bits 4 \
+--visual_a_bits 4 \
+--llm_w_bits 4 \
+--llm_a_bits 4 \
+--quant \
+--quant_llm \
+--quant_visual_clip \
+--quant_cross_attention \
+--visual_w_clip \
+--llm_w_clip \
+--online_llm_hadamard \
+--act_order \
+--online_visual_hadamard \
+--visual_w_rtn \
+--llm_w_rtn \
+--w_asym \
+--w_groupsize 16
+"""
+
+def flickr_test(processor, model, qmodel):
+    save_dir = '/home/ecnu01/workspace/sure_quant/logs/flick_figs'
+    os.makedirs(save_dir, exist_ok=True)
+
+    for idx in range(10):
+        image_path = os.path.join(save_dir, f'flickr_image_{idx}.jpg')
+        raw_image = Image.open(image_path)
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Please describe this image\n"},
+                    {"type": "image"},
+                ],
+            },
+        ]
+        prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
+
+        inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            output = model.generate(**inputs, max_new_tokens=128)
+        out_text = processor.decode(output[0], skip_special_tokens=True)
+        print(f"out_text: {out_text}")
+
+        inputs.to(qmodel.device)
+        with torch.no_grad():
+            qoutput = qmodel.generate(**inputs, max_new_tokens=128)
+        qout_text = processor.decode(qoutput[0], skip_special_tokens=True)
+        print(f"qout_text: {qout_text}")
+
+        eval_metrics(output[0], qoutput[0])
+
+        print()
+
+        # break
+
+
+
+def compare_on_flickr(qvlm):
+    qmodel = qvlm.model
+    processor = qvlm.processor
+
+    checkpoint = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
+    # original model
+    model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
+
+    flickr_test(processor, model, qmodel)
 
 
 def llava_full_infer():
@@ -69,7 +144,6 @@ def infer(vlm_llava):
     model = vlm_llava.model
     processor = vlm_llava.processor
 
-    # Confirm generations of the quantized model look sane.
     print("========== SAMPLE GENERATION ==============")
     messages = [
         {
@@ -80,18 +154,47 @@ def infer(vlm_llava):
             ],
         },
     ]
+    # messages = [
+    #     {
+    #         "role": "user",
+    #         "content": [
+    #             {"type": "text", "text": "A cat is in the image. Please answer yes or no."},
+    #             {"type": "image"},
+    #         ],
+    #     },
+    # ]
+    # messages = [
+    #     {
+    #         "role": "user",
+    #         "content": [
+    #             {"type": "text", "text": "Two dogs are in the image. Please answer yes or no."},
+    #             {"type": "image"},
+    #         ],
+    #     },
+    # ]
     prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    # raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    raw_image = Image.open("/home/ecnu01/workspace/awq_learn/sample_img/sample1.jpg")
+    # raw_image = Image.open("/home/ecnu01/workspace/awq_learn/sample_img/sample2.jpg")
 
 
     inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(model.device)
     print(inputs.keys())
     print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
-    # print(f"inputs['input_ids']: {inputs['input_ids']}")
 
 
     with torch.no_grad():
         output = model.generate(**inputs, max_new_tokens=128)
+        # output = model.generate(
+        #     **inputs, 
+        #     max_new_tokens=128,
+        #     temperature=0.7,
+        #     top_p=0.9,
+        #     do_sample=True,
+        #     num_beams=1,
+        #     repetition_penalty=1.1
+        # )
+
     print("output: ", output)
     print("output.shape: ", output.shape)
     
@@ -104,27 +207,13 @@ def main(args):
     model_name = args.model_name
     model = LLaVA(
         model_path=model_name, verbose=args.verbose
-    )
-
-    # print(model_name)
-    # print(model.model_path)
-    # print(model.model)
-    print(model.model.config)
-    print(model.model.language_model.config)
-    # vision_config = model.model.vision_tower.config
-    # num_heads = vision_config.num_attention_heads
-    # head_dim = vision_config.hidden_size // num_heads
-    # print(f"num_heads: {num_heads}")
-    # print(f"head_dim: {head_dim}")
-    
+    )    
 
     utils.seed_everything(args.seed)
     # original_output = infer(model)
     
     if not args.not_fuse_layer_norms:
         fuse_llava_layer_norms(model, args)
-        # print(model.model.language_model.model.norm.weight.data)
-        # print(model.model.language_model.model.norm.weight.shape)
     # infer(model)
 
 
@@ -298,237 +387,10 @@ def main(args):
                     observer_type="minmax",
                 )
 
-    # mme_test(model)
 
-    # llava_turbo_kv_infer(model)
-    # mme_test_llava_rot_with_turbo(model)
-
-    # analyze_weight_after_rot(model)
-    # analyze_llava_activation_after_rot(model)
+    compare_on_flickr(model)
 
     print(">>>>>>>> done")
-
-
-def analyze_llava_activation():
-    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
-
-    # original model
-    model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
-    processor = AutoProcessor.from_pretrained(checkpoint)
-
-    print(model)
-
-    # Confirm generations of the quantized model look sane.
-    print("========== SAMPLE GENERATION ==============")
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Please describe the animal in this image\n"},
-                {"type": "image"},
-            ],
-        },
-    ]
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
-
-    inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(model.device)
-
-    # paint activations llm
-    # activations = collect_llava_lang_decoder_input_activations(model, inputs)
-    # print(f"activations len: {len(activations)}")
-    # print(f"activations[0].shape: {activations[0].shape}")
-
-    # before_rot_lang_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/a_before_rot_w8a8"
-    # os.makedirs(before_rot_lang_path, exist_ok=True)
-    # plt_llava_lang_activation(activations, output_path=before_rot_lang_path)
-
-    # paint activations vision
-    activations = collect_llava_vision_input_activations(model, inputs)
-    print(f"activations len: {len(activations)}")
-    print(f"activations[0].shape: {activations[0].shape}")
-
-    before_rot_vis_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/a_vis_before_rot_w8a8"
-    os.makedirs(before_rot_vis_path, exist_ok=True)
-    plt_llava_vision_activation(activations, output_path=before_rot_vis_path)
-
-    print("==========================================")
-
-
-def analyze_llava_activation_after_rot(vlm_llava):
-    model = vlm_llava.model
-    processor = vlm_llava.processor
-    # Confirm generations of the quantized model look sane.
-    print("========== SAMPLE GENERATION ==============")
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Please describe the animal in this image\n"},
-                {"type": "image"},
-            ],
-        },
-    ]
-    prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
-
-    inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(model.device)
-
-    # paint activations llm
-    # activations = collect_llava_lang_decoder_input_activations(model, inputs)
-    # print(f"activations len: {len(activations)}")
-    # print(f"activations[0].shape: {activations[0].shape}")
-
-    # after_rot_lang_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/a_after_rot_w8a8"
-    # os.makedirs(after_rot_lang_path, exist_ok=True)
-    # plt_llava_lang_activation(activations, output_path=after_rot_lang_path)
-
-    # paint activations vision
-    activations = collect_llava_vision_input_activations(model, inputs)
-    print(f"activations len: {len(activations)}")
-    print(f"activations[0].shape: {activations[0].shape}")
-
-    after_rot_vis_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/a_vis_after_rot_w4a4"
-    os.makedirs(after_rot_vis_path, exist_ok=True)
-    plt_llava_vision_activation(activations, output_path=after_rot_vis_path)
-
-    print("==========================================")
-
-
-def paint_analyze_before_rot(args):
-    model_name = args.model_name
-    vlm_llava = LLaVA(
-        model_path=model_name, verbose=args.verbose
-    )
-
-    print(">>>>>>>>>>>> start paint")
-    # before_rot_weight_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/w_before_rot"
-    # os.makedirs(before_rot_weight_path, exist_ok=True)
-    # plt_llava_lang_weight(vlm_llava.model, output_path=before_rot_weight_path)
-
-    # before_rot_vis_weight_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/w_vis_before_rot"
-    # os.makedirs(before_rot_vis_weight_path, exist_ok=True)
-    # plt_llava_vision_weight(vlm_llava.model, output_path=before_rot_vis_weight_path)
-
-    before_rot_vis_weight_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/w_vis_before_rot_1"
-    os.makedirs(before_rot_vis_weight_path, exist_ok=True)
-    plt_llava_vision_weight(vlm_llava.model, output_path=before_rot_vis_weight_path, stat_axis=1)
-
-    print(">>>>>>>> done")
-
-
-
-
-def analyze_weight_after_rot(vlm_llava):
-    print(">>>>>>>>>>>> start paint")
-    # after_rot_weight_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/w_after_rot_w4a4"
-    # os.makedirs(after_rot_weight_path, exist_ok=True)
-    # plt_llava_lang_weight(vlm_llava.model, output_path=after_rot_weight_path)
-
-    after_rot_vis_weight_path = "/home/ccwan/stu_Jiangtp/MQuant/figs/w_vis_after_rot_w8a8"
-    os.makedirs(after_rot_vis_weight_path, exist_ok=True)
-    plt_llava_vision_weight(vlm_llava.model, output_path=after_rot_vis_weight_path)
-
-
-
-
-def llava_turbo_kv_infer(vlm_llava):
-    engine = LLaVAInferEngine(vlm_llava.model, vlm_llava.processor)
-    res = engine.generate(None, None, max_new_tokens=128)
-    # res = engine.generate(None, None, max_new_tokens=128, need_eval=True)
-    print(">>>>>>>>> result: ")
-    print(res)
-
-
-def mme_test_llava_rot_with_turbo(vlm_llava):
-    engine = LLaVAInferEngine(vlm_llava.model, vlm_llava.processor)
-
-    # TO MOD
-    data_path_list = [
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
-    ]
-
-    # model = vlm_llava.model
-    processor = engine.processor
-
-
-    # TO MOD
-    output_path = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res'
-
-    os.makedirs(output_path, exist_ok=True)
-
-    turn = 0
-    speed_list = []
-
-    t_benchmark_start = time.perf_counter()
-    for data_path in data_path_list:
-        t_data, messages = load_dataset_from_local(data_path)
-        print(f'>>>>>>>>> load {data_path}')
-        # break
-
-        print('>>>>>>>>> start eval')
-        mode = 'a'
-        sp_list = []
-        with open(os.path.join(output_path, f'eval_results0{turn}.txt'), mode, encoding="utf-8") as fout:
-            for item, msg_item in tqdm(zip(t_data, messages)):
-                # torch.cuda.empty_cache()
-
-                # 使用 processor 处理输入
-                text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = process_vision_info(msg_item)
-                inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                ).to("cuda")
-                
-                # print(inputs)
-                # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
-                # print(inputs.keys())
-                # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
-                # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
-                # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
-                # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
-
-                start = time.perf_counter()
-
-                generated_ids = engine.generate_for_mme(inputs)
-                # generated_ids = model.generate(**inputs, max_new_tokens=256, do_sample=True, temperature=0.1)
-
-                
-                # print(f"generated_ids.shape: {generated_ids.shape}")
-
-                t_elapsed = time.perf_counter() - start
-
-                sp_list.append(speed_compute(inputs['input_ids'].shape[-1], generated_ids.shape[-1], t_elapsed))
-
-                response = processor.batch_decode(
-                    generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )
-                # 打印结果
-                # print("Generated Response:", response)
-
-                print(item['category'], item['question_id'], item['question'], item['answer'], response, sep='\t', file=fout)
-                # break
-        
-        speed_list.append(average_data_list(sp_list))
-
-        print(f'>>>>>>>>> end eval')
-        torch.cuda.empty_cache()
-        turn += 1
-
-        # break
-
-    t_benchmark_end = time.perf_counter()
-
-    print(f'>>>>>>>>> complete turn: {turn}')
-    print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
-    print(f'average infer speed: {average_data_list(speed_list):.2f} token/s')
 
 
 
@@ -543,138 +405,6 @@ def eval_metrics(original_output, new_output):
     print(f"Pearson Correlation: {pearson_corr}")
     kl_div = compute_kl_for_quantization(original_output, new_output)
     print(f"KL Divergence: {kl_div}")
-
-
-def load_dataset_from_local(path):
-    trainset = load_dataset('parquet', data_files=path, split='train')
-    # testset = load_dataset('parquet', data_files=path, split='test')
-    print(f'len(trainset): {len(trainset)}')
-    # print(type(trainset))
-    # print(f'len(testset): {len(testset)}')
-    # print(type(testset))
-
-    messages = []
-    for item in trainset:
-        # print(item)
-        # break
-        # mme_data = {
-        #     'question_id': 'code_reasoning/0020.png',
-        #     'image': Image.open('path_to_image/code_reasoning/0020.png'),
-        #     'question': 'Is a python code shown in the picture? Please answer yes or no.',
-        #     'answer': 'Yes',
-        #     'category': 'code_reasoning'
-        # }
-
-        msg_item = [{
-            "role": "user",
-            "content": [
-                {"type": "image", "image": item['image']},
-                {"type": "text", "text": item['question']}
-            ]
-        }]
-        messages.append(msg_item)
-
-    return trainset, messages
-
-
-def speed_compute(input_len, generate_len, t_elapsed) -> str:
-    new_generated_tokens = generate_len - input_len
-    return new_generated_tokens / t_elapsed
-
-
-def average_data_list(float_list):
-    if len(float_list) == 0:
-        return 0
-    return sum(float_list) / len(float_list)
-
-
-def mme_test(vlm_llava):
-    # TO MOD
-    data_path_list = [
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
-    ]
-
-    model = vlm_llava.model
-    processor = vlm_llava.processor
-
-
-    # TO MOD
-    output_path = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res'
-    os.makedirs(output_path, exist_ok=True)
-
-    turn = 0
-    speed_list = []
-
-    t_benchmark_start = time.perf_counter()
-    for data_path in data_path_list:
-        t_data, messages = load_dataset_from_local(data_path)
-        print(f'>>>>>>>>> load {data_path}')
-        # break
-
-        print('>>>>>>>>> start eval')
-        mode = 'a'
-        sp_list = []
-        with open(os.path.join(output_path, f'eval_results0{turn}.txt'), mode, encoding="utf-8") as fout:
-            for item, msg_item in tqdm(zip(t_data, messages)):
-                # torch.cuda.empty_cache()
-
-                # 使用 processor 处理输入
-                text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = process_vision_info(msg_item)
-                inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                ).to("cuda")
-                
-                # print(inputs)
-                # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
-                # print(inputs.keys())
-                # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
-                # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
-                # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
-                # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
-
-                start = time.perf_counter()
-
-                generated_ids = model.generate(**inputs, max_new_tokens=256)
-                # generated_ids = model.generate(**inputs, max_new_tokens=256, do_sample=True, temperature=0.1)
-
-                
-                # print(f"generated_ids.shape: {generated_ids.shape}")
-
-                t_elapsed = time.perf_counter() - start
-
-                sp_list.append(speed_compute(inputs['input_ids'].shape[-1], generated_ids.shape[-1], t_elapsed))
-
-                response = processor.batch_decode(
-                    generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )
-                # 打印结果
-                # print("Generated Response:", response)
-
-                print(item['category'], item['question_id'], item['question'], item['answer'], response, sep='\t', file=fout)
-                # break
-        
-        speed_list.append(average_data_list(sp_list))
-
-        print(f'>>>>>>>>> end eval')
-        torch.cuda.empty_cache()
-        turn += 1
-
-        # break
-
-    t_benchmark_end = time.perf_counter()
-
-    print(f'>>>>>>>>> complete turn: {turn}')
-    print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
-    print(f'average infer speed: {average_data_list(speed_list):.2f} token/s')
-
 
 
 
@@ -1056,10 +786,5 @@ if __name__ == "__main__":
         help="test multi_moda"
     )
     args = parser.parse_args()
-    # print(args)
-    # init_logger(args)
 
     main(args)
-
-    # llava_full_infer()
-
