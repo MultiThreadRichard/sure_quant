@@ -98,6 +98,8 @@ def calibrate_rotation(
 
     # ---- Training loop ----
     for step in range(cfg.calibration_steps):
+        optimizer.zero_grad(set_to_none=True)
+
         # --- Mini‑batch sampling ---
         # Random shuffling each step prevents the optimiser from over‑fitting
         # to the order of the calibration data (which is typically IID anyway).
@@ -134,30 +136,33 @@ def calibrate_rotation(
         loss = build_total_loss(loss_rec, loss_dk, loss_bal, loss_rng, cfg)
 
         # --- Gradient step ---
-        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         # --- Logging ---
         log_item = {
             "step": step,
-            "loss": float(loss.item()),
-            "loss_rec": float(loss_rec.item()),
-            "loss_dk": float(loss_dk.item()),
-            "loss_bal": float(loss_bal.item()),
-            "loss_rng": float(loss_rng.item()),
+            "loss": float(loss.detach()),
+            "loss_rec": float(loss_rec.detach()),
+            "loss_dk": float(loss_dk.detach()),
+            "loss_bal": float(loss_bal.detach()),
+            "loss_rng": float(loss_rng.detach()),
         }
         logs.append(log_item)
 
         if step % 100 == 0 or step == cfg.calibration_steps - 1:
             print(
                 f"[{step:4d}/{cfg.calibration_steps}] "
-                f"total={loss.item():.6f}  "
-                f"rec={loss_rec.item():.6f}  "
-                f"dk={loss_dk.item():.4f}  "
-                f"bal={loss_bal.item():.4f}  "
-                f"rng={loss_rng.item():.4f}"
+                f"total={log_item['loss']:.6f}  "
+                f"rec={log_item['loss_rec']:.6f}  "
+                f"dk={log_item['loss_dk']:.4f}  "
+                f"bal={log_item['loss_bal']:.4f}  "
+                f"rng={log_item['loss_rng']:.4f}"
             )
+
+        # Avoid retaining a full calibration output while the next iteration
+        # allocates its forward activations, especially for transposed weights.
+        del out, x_blk, x_hat_blk, z, loss, loss_rec, loss_dk, loss_bal, loss_rng, x
 
     # ---- Cleanup ----
     sure_quantizer.eval()
