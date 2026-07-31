@@ -33,6 +33,10 @@ class SureQuantConfig:
     lambda_range: float = 0.01
     lambda_orth: float = 0.0
 
+    # KL signed-energy temperature. Lower values emphasize the coordinates
+    # carrying the most positive or negative energy within each block.
+    kl_temperature: float = 1.0
+
     # --- Calibration training ---
     calibration_steps: int = 500
     calibration_lr: float = 1e-2

@@ -107,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--torch-dtype", type=parse_dtype, default=torch.float16)
     parser.add_argument("--device-map", default="cuda")
     parser.add_argument("--dk-sample-size", type=int, default=1024)
+    parser.add_argument("--kl-temperature", type=float, default=1.0)
     parser.add_argument("--calibration-steps", type=parse_int_grid, default=[20, 50, 100])
     parser.add_argument(
         "--calibration-lr",
