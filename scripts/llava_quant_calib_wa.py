@@ -18,6 +18,7 @@ from scripts.llava_wa.search import run_grid_search # noqa: E402
 from scripts.llava_wa.config import build_parser  # noqa: E402
 from scripts.llava_wa.data import generate_assistant_outputs # noqa: E402
 from scripts.llava_wa.config import loss_grid # noqa: E402
+from scripts.llava_wa.persistence import load_quantized_model # noqa: E402
 
 def main() -> None:
     args = build_parser().parse_args()
