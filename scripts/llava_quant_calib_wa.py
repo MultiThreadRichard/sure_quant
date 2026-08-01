@@ -26,7 +26,7 @@ def main() -> None:
     summary = run_grid_search(args)
     print(
         f"Best trial: {summary['best_trial']}; "
-        f"validation KL: {summary['best_score']:.8g}; "
+        f"validation MSE: {summary['best_score']:.8g}; "
         f"elapsed: {time.time() - start:.2f}s"
     )
 

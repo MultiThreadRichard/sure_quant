@@ -12,7 +12,7 @@ We use *post‑training quantization with learnable rotation* (PTQ‑LR):
      (or weights) by running the model on calibration data.
   2. Freeze the base model and the Hadamard signs.
   3. Train only the Givens rotation angles θ to minimise a composite
-     loss that balances distribution fidelity (KL) with quantization
+     loss that balances reconstruction fidelity (MSE) with quantization
      friendliness (DKoleo + balance + range).
 
 This is efficient because:
@@ -24,10 +24,9 @@ This is efficient because:
 --------------------------------------------------------------------
 Loss function breakdown
 
-    total = λ_rec · KL  +  λ_dk · DKoleo  +  λ_bal · Balance  +  λ_rng · Range
+    total = λ_rec · MSE  +  λ_dk · DKoleo  +  λ_bal · Balance  +  λ_rng · Range
 
-  - **KL**: divergence between the signed-energy distributions of the
-    rotated values and their INT4 reconstruction.
+  - **MSE** (reconstruction): ‖x − x̂‖² — fidelity of the round‑trip.
   - **DKoleo**: −log(min pairwise distance) — spread rotated vectors
     uniformly on the unit sphere.
   - **Balance**: penalises variance imbalance across coordinates within
@@ -37,7 +36,7 @@ Loss function breakdown
     single block dominates the scale and wastes bits.
 
 Recommended training order (from the design doc):
-  1. First train with only λ_rec > 0 until KL converges.
+  1. First train with only λ_rec > 0 until MSE converges.
   2. Then add DKoleo (λ_dk) for distribution uniformity.
   3. Finally add balance (λ_bal) and range (λ_rng) for fine‑tuning.
 """
@@ -49,7 +48,7 @@ from torch.optim import Adam
 
 from config.default_config import SureQuantConfig
 from model.sure_quantizer import SureQuantizer
-from loss.reconstruction import kl_reconstruction_loss
+from loss.reconstruction import reconstruction_loss
 from loss.dkoleo import DKoleoLoss
 from loss.balance import balance_loss
 from loss.range_loss import range_loss
@@ -122,15 +121,10 @@ def calibrate_rotation(
         x_blk = out["x_blk"]
         x_hat_blk = out["x_hat_blk"]
         z = out["z"]
-        z_hat = out["z_hat"]
 
         # --- Compute loss components ---
         # Primary objective: minimise reconstruction error.
-        loss_rec = kl_reconstruction_loss(
-            z,
-            z_hat,
-            temperature=cfg.kl_temperature,
-        )
+        loss_rec = reconstruction_loss(x_blk, x_hat_blk)
 
         # Auxiliary objectives computed on the rotated (pre‑quant) space z.
         # We regularise z because that is what the quantiser sees.
@@ -150,7 +144,6 @@ def calibrate_rotation(
             "step": step,
             "loss": float(loss.detach()),
             "loss_rec": float(loss_rec.detach()),
-            "loss_kl": float(loss_rec.detach()),
             "loss_dk": float(loss_dk.detach()),
             "loss_bal": float(loss_bal.detach()),
             "loss_rng": float(loss_rng.detach()),
@@ -169,8 +162,7 @@ def calibrate_rotation(
 
         # Avoid retaining a full calibration output while the next iteration
         # allocates its forward activations, especially for transposed weights.
-        del out, x_blk, x_hat_blk, z, z_hat
-        del loss, loss_rec, loss_dk, loss_bal, loss_rng, x
+        del out, x_blk, x_hat_blk, z, loss, loss_rec, loss_dk, loss_bal, loss_rng, x
 
     # ---- Cleanup ----
     sure_quantizer.eval()
@@ -252,15 +244,10 @@ def calibrate_llava(
         x_blk = out["x_blk"]
         x_hat_blk = out["x_hat_blk"]
         z = out["z"]
-        z_hat = out["z_hat"]
 
         # --- Compute loss components ---
         # Primary objective: minimise reconstruction error.
-        loss_rec = kl_reconstruction_loss(
-            z,
-            z_hat,
-            temperature=cfg.kl_temperature,
-        )
+        loss_rec = reconstruction_loss(x_blk, x_hat_blk)
 
         # Auxiliary objectives computed on the rotated (pre‑quant) space z.
         # We regularise z because that is what the quantiser sees.
@@ -281,7 +268,6 @@ def calibrate_llava(
             "step": step,
             "loss": float(loss.item()),
             "loss_rec": float(loss_rec.item()),
-            "loss_kl": float(loss_rec.item()),
             "loss_dk": float(loss_dk.item()),
             "loss_bal": float(loss_bal.item()),
             "loss_rng": float(loss_rng.item()),

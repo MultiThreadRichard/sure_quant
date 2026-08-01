@@ -17,7 +17,7 @@ def build_total_loss(
     """Combine reconstruction, DKoleo, balance, and range losses.
 
     Args:
-        loss_rec: Primary reconstruction loss, currently KL divergence.
+        loss_rec: Reconstruction (MSE) loss.
         loss_dk: DKoleo loss.
         loss_bal: Balance loss.
         loss_range: Range loss.

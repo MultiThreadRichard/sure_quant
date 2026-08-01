@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 from config.default_config import SureQuantConfig
-from loss.reconstruction import kl_reconstruction_loss
+from loss.reconstruction import reconstruction_loss
 from model.sure_quant_linear import SureQuantLinear
 from model.sure_quantizer import SureQuantizer
 
@@ -29,16 +29,11 @@ def calibrate_weight_rotation(
         else:
             batch = values
         output = quantizer(batch)
-        loss = kl_reconstruction_loss(
-            output["z"],
-            output["z_hat"],
-            temperature=cfg.kl_temperature,
-        )
+        loss = reconstruction_loss(output["x_blk"], output["x_hat_blk"])
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
-        loss_value = float(loss.detach())
-        logs.append({"step": step, "loss_rec": loss_value, "loss_kl": loss_value})
+        logs.append({"step": step, "loss_rec": float(loss.detach())})
         del output, loss, batch
     quantizer.eval()
     return logs
@@ -94,30 +89,23 @@ def reconstruction_score(
     validation_data: dict[str, torch.Tensor],
     *,
     batch_size: int,
-    temperature: float = 1.0,
 ) -> tuple[float, dict[str, float]]:
-    """Calculate held-out block-distribution KL divergence."""
+    """Calculate held-out activation reconstruction MSE."""
     layer_scores: dict[str, float] = {}
     for name, module in model.named_modules():
         if not isinstance(module, SureQuantLinear) or name not in validation_data:
             continue
         values = validation_data[name]
-        divergence_sum = 0.0
-        block_count = 0
+        squared_error = 0.0
+        element_count = 0
         device = module.linear.weight.device
         for start in range(0, len(values), batch_size):
-            batch = values[start : start + batch_size].to(device)
-            output = module.activation_quantizer(batch)
-            loss = kl_reconstruction_loss(
-                output["z"],
-                output["z_hat"],
-                temperature=temperature,
-            )
-            current_blocks = output["z"].shape[0] * output["z"].shape[1]
-            divergence_sum += float(loss) * current_blocks
-            block_count += current_blocks
-        if block_count:
-            layer_scores[name] = divergence_sum / block_count
+            output = module.activation_quantizer(values[start : start + batch_size].to(device))
+            difference = output["x_blk"] - output["x_hat_blk"]
+            squared_error += float(difference.float().square().sum())
+            element_count += difference.numel()
+        if element_count:
+            layer_scores[name] = squared_error / element_count
     if not layer_scores:
         raise RuntimeError("No quantized layer matched the validation activations")
     return sum(layer_scores.values()) / len(layer_scores), layer_scores
