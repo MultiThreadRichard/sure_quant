@@ -70,13 +70,15 @@ def _compress_int4_weights(
         weight_t = module.linear.weight.detach().T.contiguous()
         rotated = quantizer.rotation(blockify(weight_t, quantizer.block_size))
         _, scale = quantizer.quantizer(rotated)
-        scale_bc = scale.view(1, -1, 1)
+        scale_bc = quantizer.quantizer.broadcast_scale(scale)
         codes = torch.round(rotated / scale_bc).clamp(-8, 7).to(torch.int8)
         layers[name] = {
             "packed_weight": _pack_signed_int4(codes),
             "scale": scale.detach().cpu(),
             "rotated_shape": list(codes.shape),
             "weight_shape": list(module.linear.weight.shape),
+            "scale_granularity": quantizer.quantizer.scale_granularity,
+            "clip_ratio": quantizer.quantizer.clip_ratio,
         }
         weight_keys.add(f"{name}.linear.weight")
 
@@ -110,7 +112,8 @@ def _restore_int4_weights(model: nn.Module, artifact: dict[str, Any]) -> None:
         device = module.linear.weight.device
         rotated = codes.reshape(rotated_shape).to(device=device)
         scale = state["scale"].to(device=device)
-        rotated = rotated.to(dtype=scale.dtype) * scale.view(1, -1, 1)
+        scale_bc = module.weight_quantizer.quantizer.broadcast_scale(scale)
+        rotated = rotated.to(dtype=scale.dtype) * scale_bc
         weight_t = deblockify(module.weight_quantizer.rotation.inverse(rotated))
         restored = weight_t.T.to(dtype=module.linear.weight.dtype)
         if list(restored.shape) != state["weight_shape"]:
@@ -217,6 +220,13 @@ def load_quantized_model(
         quantize_mm_proj=model_cfg["quantize_mm_proj"],
         quantize_language=model_cfg["quantize_language"],
         quantize_weight=model_cfg["quantize_weight"],
+        clip_ratio=quant_cfg.get("clip_ratio", 1.0),
+        activation_scale_granularity=quant_cfg.get(
+            "activation_scale_granularity", "per_block"
+        ),
+        weight_scale_granularity=quant_cfg.get(
+            "weight_scale_granularity", "per_block"
+        ),
     )
     storage = metadata.get("weight_storage", {})
     is_int4_checkpoint = storage.get("format") == "surequant_packed_int4"

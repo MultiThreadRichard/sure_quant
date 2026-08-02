@@ -15,6 +15,46 @@ def test_quant_shape():
     assert scale.shape == (6,)
 
 
+def test_per_vector_block_scale_shape_and_outlier_isolation():
+    """A token outlier must not enlarge scales for every other vector."""
+    torch.manual_seed(3)
+    x = torch.randn(8, 3, 16)
+    x[0, 0, 0] = 100.0
+    shared = BlockUniformQuantizer(4, scale_granularity="per_block")
+    fine = BlockUniformQuantizer(4, scale_granularity="per_vector_block")
+
+    shared_hat, shared_scale = shared(x)
+    fine_hat, fine_scale = fine(x)
+
+    assert shared_scale.shape == (3,)
+    assert fine_scale.shape == (8, 3)
+    shared_error = (shared_hat[1:] - x[1:]).square().mean()
+    fine_error = (fine_hat[1:] - x[1:]).square().mean()
+    assert fine_error < shared_error
+
+
+def test_clip_ratio_reduces_quantization_step_and_clips_outlier():
+    x = torch.tensor([[[-10.0, -1.0, 1.0, 10.0]]])
+    unclipped = BlockUniformQuantizer(
+        4, scale_granularity="per_vector_block", clip_ratio=1.0
+    )
+    clipped = BlockUniformQuantizer(
+        4, scale_granularity="per_vector_block", clip_ratio=0.5
+    )
+
+    _, full_scale = unclipped(x)
+    clipped_hat, clipped_scale = clipped(x)
+
+    assert torch.allclose(clipped_scale, full_scale * 0.5)
+    assert clipped_hat.max() < x.max()
+
+
+@pytest.mark.parametrize("clip_ratio", [0.0, -0.1, 1.1])
+def test_invalid_clip_ratio(clip_ratio):
+    with pytest.raises(ValueError, match="clip_ratio"):
+        BlockUniformQuantizer(4, clip_ratio=clip_ratio)
+
+
 def test_quant_identity_8bit():
     """With 8-bit quantization, per‑element max absolute error is small.
 

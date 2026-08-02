@@ -17,8 +17,10 @@ Why per‑block (not per‑tensor) scale?
 
 A single scale factor for the entire tensor [N, M, g] would be dominated
 by the block with the largest magnitude, causing other blocks to be
-quantised very coarsely.  Using one scale per block (dimension M) allows
-each block to adapt its quantization range independently.
+quantised very coarsely. A scale can be shared by a block across all input
+vectors (``per_block``), or computed for every vector and block
+(``per_vector_block``). The latter prevents one token or transposed weight
+row from reducing the effective precision of every other vector.
 
 --------------------------------------------------------------------
 Why symmetric (not affine) quantization?
@@ -59,14 +61,34 @@ class BlockUniformQuantizer(nn.Module):
 
     Args:
         num_bits: Number of bits for quantization (e.g. 4 → 16 levels).
+        scale_granularity: ``"per_block"`` returns ``[M]`` scales, while
+            ``"per_vector_block"`` returns ``[N, M]`` scales.
+        clip_ratio: Fraction of the absolute maximum represented without
+            saturation. Values below 1 trade clipping of outliers for a
+            smaller quantization step.
         eps: Small constant for numerical stability of scale.
     """
 
-    def __init__(self, num_bits: int, eps: float = 1e-8):
+    def __init__(
+        self,
+        num_bits: int,
+        scale_granularity: str = "per_block",
+        clip_ratio: float = 1.0,
+        eps: float = 1e-8,
+    ):
         super().__init__()
         if num_bits < 1:
             raise ValueError(f"num_bits must be >= 1, got {num_bits}")
+        if scale_granularity not in ("per_block", "per_vector_block"):
+            raise ValueError(
+                "scale_granularity must be 'per_block' or "
+                f"'per_vector_block', got {scale_granularity!r}"
+            )
+        if not 0.0 < clip_ratio <= 1.0:
+            raise ValueError(f"clip_ratio must be in (0, 1], got {clip_ratio}")
         self.num_bits = num_bits
+        self.scale_granularity = scale_granularity
+        self.clip_ratio = float(clip_ratio)
         self.eps = eps
         # For b bits, the integer grid is [−2^{b-1}, 2^{b-1}−1].
         # Example b=4: qmin=−8, qmax=7.
@@ -77,7 +99,7 @@ class BlockUniformQuantizer(nn.Module):
         """Quantise a block‑partitioned tensor.
 
         Algorithm:
-            1. Compute per‑block scale = max(|z_block|) / qmax.
+            1. Compute scale = clip_ratio * max(|z_block|) / qmax.
             2. Round z / scale to nearest integer and clamp to [qmin, qmax].
             3. Reconstruct with STE for differentiable training.
 
@@ -87,19 +109,22 @@ class BlockUniformQuantizer(nn.Module):
         Returns:
             ``(z_hat, scale)`` where:
                 - ``z_hat``: ``[N, M, g]`` — differentiable approximation.
-                - ``scale``: ``[M]`` — per‑block scale for deployment.
+                - ``scale``: ``[M]`` or ``[N, M]`` according to the configured
+                  granularity.
         """
         if z.dim() != 3:
             raise ValueError(f"z must be 3D [N, M, g], got shape {z.shape}")
 
-        # ---- 1. Compute per‑block scale via absmax ----
-        # scale[m] = max_{n, j} |z[n, m, j]| / qmax
-        # amax over dims 0 (batch) and 2 (within‑block) gives [M].
-        scale = z.abs().amax(dim=(0, 2)) / max(self.qmax, 1)
+        # ``per_vector_block`` isolates tokens/weight rows; legacy
+        # ``per_block`` shares one scale across the leading dimension.
+        if self.scale_granularity == "per_vector_block":
+            absolute_max = z.abs().amax(dim=2)
+        else:
+            absolute_max = z.abs().amax(dim=(0, 2))
+        scale = absolute_max * self.clip_ratio / max(self.qmax, 1)
         # Clamp scale away from zero so division is safe.
         scale = torch.clamp(scale, min=self.eps)
-        # Reshape to [1, M, 1] for broadcasting over [N, M, g].
-        scale_bc = scale.view(1, -1, 1)
+        scale_bc = self.broadcast_scale(scale)
 
         # ---- 2. Quantise: float → int → float ----
         # Integer indices: q = round(z / scale)
@@ -118,6 +143,15 @@ class BlockUniformQuantizer(nn.Module):
         z_hat = z + (z_q - z).detach()
         return z_hat, scale
 
+    @staticmethod
+    def broadcast_scale(scale: torch.Tensor) -> torch.Tensor:
+        """Reshape persisted 1-D or 2-D scales for ``[N, M, g]`` tensors."""
+        if scale.dim() == 1:
+            return scale.view(1, -1, 1)
+        if scale.dim() == 2:
+            return scale.unsqueeze(-1)
+        raise ValueError(f"scale must have shape [M] or [N, M], got {scale.shape}")
+
 
 class WeightQuantizer(torch.nn.Module):
     """Asymmetric weight quantizer for int4 quantization.
@@ -129,16 +163,16 @@ class WeightQuantizer(torch.nn.Module):
         shape: Shape for scale and zero-point buffers.
     """
 
-    def __init__(self, shape=1):
+    def __init__(self, num_bits: int = 4, shape=1):
         super(WeightQuantizer, self).__init__()
         self.register_buffer("maxq", torch.tensor(0))
         self.register_buffer("scale", torch.zeros(shape))
         self.register_buffer("zero", torch.zeros(shape))
-        self.bits = 4  # Fixed to int4
+        self.num_bits = num_bits  # Fixed to int4
         self.perchannel = True  # Fixed to per-channel
         self.sym = False  # Fixed to asymmetric
         self.mse = False  # No MSE optimization
-        self.maxq = torch.tensor(2**4 - 1)  # 15 for int4
+        self.maxq = torch.tensor((1 << num_bits) - 1)  # 15 for int4
 
     def find_params(self, x):
         """Compute scale and zero-point for asymmetric quantization.

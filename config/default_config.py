@@ -17,6 +17,9 @@ class SureQuantConfig:
     # --- Block & quantization ---
     block_size: int = 16
     num_bits: int = 4
+    clip_ratio: float = 1.0
+    activation_scale_granularity: str = "per_vector_block"
+    weight_scale_granularity: str = "per_vector_block"
 
     # --- Givens rotation ---
     givens_pairs_strategy: str = "butterfly"
@@ -43,7 +46,7 @@ class SureQuantConfig:
     stiefel_num_reflectors: int = 8
 
     # --- Quantisation mode ---
-    scale_mode: str = "per_block_absmax"
+    scale_mode: str = "clipped_absmax"
     target_types: Tuple[str, ...] = ("weight", "activation")
 
     # --- Device / dtype ---

@@ -13,12 +13,17 @@ def quantize_linear_layer(
     block_size: int,
     rotation_strategy: str,
     quantize_weight: bool,
+    clip_ratio: float = 1.0,
+    activation_scale_granularity: str = "per_vector_block",
+    weight_scale_granularity: str = "per_vector_block",
 ) -> SureQuantLinear:
     activation_quantizer = SureQuantizer(
         dim=linear.in_features,
         block_size=block_size,
         num_bits=num_bits,
         rotation_strategy=rotation_strategy,
+        scale_granularity=activation_scale_granularity,
+        clip_ratio=clip_ratio,
     )
     weight_quantizer = None
     if quantize_weight and linear.out_features % block_size == 0:
@@ -27,6 +32,8 @@ def quantize_linear_layer(
             block_size=block_size,
             num_bits=num_bits,
             rotation_strategy=rotation_strategy,
+            scale_granularity=weight_scale_granularity,
+            clip_ratio=clip_ratio,
         )
     return SureQuantLinear(linear, activation_quantizer, weight_quantizer)
 
@@ -38,6 +45,9 @@ def _replace_linears(
     block_size: int,
     rotation_strategy: str,
     quantize_weight: bool,
+    clip_ratio: float = 1.0,
+    activation_scale_granularity: str = "per_vector_block",
+    weight_scale_granularity: str = "per_vector_block",
 ) -> int:
     linears = [
         (name, module)
@@ -63,6 +73,9 @@ def _replace_linears(
                 block_size=block_size,
                 rotation_strategy=rotation_strategy,
                 quantize_weight=quantize_weight,
+                clip_ratio=clip_ratio,
+                activation_scale_granularity=activation_scale_granularity,
+                weight_scale_granularity=weight_scale_granularity,
             ),
         )
         replaced += 1
@@ -79,6 +92,9 @@ def quantize_llava_model(
     quantize_mm_proj: bool = True,
     quantize_language: bool = True,
     quantize_weight: bool = True,
+    clip_ratio: float = 1.0,
+    activation_scale_granularity: str = "per_vector_block",
+    weight_scale_granularity: str = "per_vector_block",
 ) -> nn.Module:
     targets: list[tuple[str, nn.Module]] = []
     if quantize_vision:
@@ -94,6 +110,9 @@ def quantize_llava_model(
             block_size=block_size,
             rotation_strategy=rotation_strategy,
             quantize_weight=quantize_weight,
+            clip_ratio=clip_ratio,
+            activation_scale_granularity=activation_scale_granularity,
+            weight_scale_granularity=weight_scale_granularity,
         )
         print(f"Wrapped {count} {label} linear layers")
     return model

@@ -48,6 +48,7 @@ def _trial_configs(args: argparse.Namespace) -> list[SureQuantConfig]:
     base_cfg = SureQuantConfig(
         num_bits=args.num_bits,
         block_size=args.block_size,
+        clip_ratio=args.clip_ratio_grid[0],
         calibration_steps=args.calibration_steps[0],
         calibration_lr=args.calibration_lr[0],
         calibration_batch_size=args.calibration_batch_size,
@@ -59,6 +60,7 @@ def _trial_configs(args: argparse.Namespace) -> list[SureQuantConfig]:
         {
             "calibration_steps": args.calibration_steps,
             "calibration_lr": args.calibration_lr,
+            "clip_ratio": args.clip_ratio_grid,
             "lambda_rec": args.lambda_rec_grid,
             "lambda_dk": args.lambda_dk_grid,
             "lambda_bal": args.lambda_bal_grid,
@@ -127,6 +129,9 @@ def run_grid_search(args: argparse.Namespace) -> dict[str, Any]:
             quantize_mm_proj=args.quantize_mm_proj,
             quantize_language=args.quantize_language,
             quantize_weight=args.quantize_weight,
+            clip_ratio=cfg.clip_ratio,
+            activation_scale_granularity=cfg.activation_scale_granularity,
+            weight_scale_granularity=cfg.weight_scale_granularity,
         )
         calibration_logs = calibrate_all_quantizers(model, train_data, cfg)
         score, layer_scores = reconstruction_score(

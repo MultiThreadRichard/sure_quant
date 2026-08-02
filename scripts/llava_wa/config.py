@@ -23,8 +23,13 @@ CALIBRATION_DATA_PATHS = (
     "/home/ecnu03/workspace/data/flickr30k/data/test-00000-of-00009.parquet",
 )
 LOSS_GRID_KEYS = ("lambda_rec", "lambda_dk", "lambda_bal", "lambda_range")
-SEARCH_GRID_KEYS = ("calibration_steps", "calibration_lr", *LOSS_GRID_KEYS)
-POSITIVE_GRID_KEYS = {"calibration_steps", "calibration_lr"}
+SEARCH_GRID_KEYS = (
+    "calibration_steps",
+    "calibration_lr",
+    "clip_ratio",
+    *LOSS_GRID_KEYS,
+)
+POSITIVE_GRID_KEYS = {"calibration_steps", "calibration_lr", "clip_ratio"}
 
 
 def loss_grid(
@@ -41,6 +46,8 @@ def loss_grid(
             raise ValueError(f"Grid for {key} cannot be empty")
         if key in POSITIVE_GRID_KEYS and any(value <= 0 for value in values):
             raise ValueError(f"Grid for {key} must contain only positive values")
+        if key == "clip_ratio" and any(value > 1 for value in values):
+            raise ValueError("Grid for clip_ratio must contain values no greater than 1")
         if key in LOSS_GRID_KEYS and any(value < 0 for value in values):
             raise ValueError(f"Grid for {key} must contain only non-negative values")
 
@@ -99,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--num-bits", type=int, default=4)
     parser.add_argument("--block-size", type=int, default=128)
+    parser.add_argument(
+        "--clip-ratio-grid",
+        type=parse_float_grid,
+        default=[0.9, 1.0],
+        help="Absmax clipping ratios searched for both activation and weight INT4.",
+    )
     parser.add_argument("--rotation-strategy", choices=("rotation",), default="rotation")
     parser.add_argument("--calibration-batch-size", type=int, default=128)
     parser.add_argument("--evaluation-batch-size", type=int, default=128)

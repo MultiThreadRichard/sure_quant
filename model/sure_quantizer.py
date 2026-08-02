@@ -110,6 +110,9 @@ class SureQuantizer(nn.Module):
         rotation_strategy: ``"rotation"`` or ``"stiefel"``.
         rotation_module: Optional pre-built strategy module for dependency injection.
         stiefel_num_reflectors: Reflector count when using stiefel strategy.
+        scale_granularity: Whether a scale is shared across vectors or computed
+            independently for every vector and block.
+        clip_ratio: Absmax clipping ratio in ``(0, 1]``.
     """
 
     def __init__(
@@ -121,6 +124,8 @@ class SureQuantizer(nn.Module):
         rotation_strategy: str = "rotation",
         rotation_module: nn.Module | None = None,
         stiefel_num_reflectors: int = 8,
+        scale_granularity: str = "per_block",
+        clip_ratio: float = 1.0,
     ):
         super().__init__()
         if dim % block_size != 0:
@@ -142,7 +147,11 @@ class SureQuantizer(nn.Module):
         else:
             self.rotation = self._build_rotation_strategy()
 
-        self.quantizer = BlockUniformQuantizer(num_bits)
+        self.quantizer = BlockUniformQuantizer(
+            num_bits,
+            scale_granularity=scale_granularity,
+            clip_ratio=clip_ratio,
+        )
 
     def _build_rotation_strategy(self) -> nn.Module:
         if self.rotation_strategy == "rotation":
