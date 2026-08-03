@@ -1,11 +1,6 @@
 """LLaVA FP4 Quantization Grid Search.
 
-This script mirrors ``scripts/llava_wa/search.py`` but uses the FP4
-quantization pipeline defined in ``scripts/llava_wa/modeling_fp4.py``
-instead of the standard INT4 SureQuant pipeline.  All data loading,
-calibration, grid expansion and scoring utilities are reused from the
-``llava_wa`` package -- only the model-quantization and persistence
-helpers are swapped for their FP4-aware counterparts.
+EVAL SCORE: mse
 """
 
 from __future__ import annotations
@@ -64,7 +59,6 @@ def _validate_args(args: argparse.Namespace) -> None:
         "calibration_batch_size": args.calibration_batch_size,
         "evaluation_batch_size": args.evaluation_batch_size,
         "dk_sample_size": args.dk_sample_size,
-        "kl_temperature": args.kl_temperature,
         "inference_max_new_tokens": args.inference_max_new_tokens,
     }
     invalid = [name for name, value in positive_values.items() if value <= 0]
@@ -78,11 +72,11 @@ def _trial_configs(args: argparse.Namespace) -> list[SureQuantConfig]:
     base_cfg = SureQuantConfig(
         num_bits=args.num_bits,
         block_size=args.block_size,
+        clip_ratio=args.clip_ratio_grid[0],
         calibration_steps=args.calibration_steps[0],
         calibration_lr=args.calibration_lr[0],
         calibration_batch_size=args.calibration_batch_size,
         dk_sample_size=args.dk_sample_size,
-        kl_temperature=args.kl_temperature,
         device=args.device_map,
     )
     return loss_grid(
@@ -90,6 +84,7 @@ def _trial_configs(args: argparse.Namespace) -> list[SureQuantConfig]:
         {
             "calibration_steps": args.calibration_steps,
             "calibration_lr": args.calibration_lr,
+            "clip_ratio": args.clip_ratio_grid,
             "lambda_rec": args.lambda_rec_grid,
             "lambda_dk": args.lambda_dk_grid,
             "lambda_bal": args.lambda_bal_grid,
@@ -160,20 +155,22 @@ def run_grid_search_fp4(args: argparse.Namespace) -> dict[str, Any]:
             quantize_mm_proj=args.quantize_mm_proj,
             quantize_language=args.quantize_language,
             quantize_weight=args.quantize_weight,
+            clip_ratio=cfg.clip_ratio,
+            activation_scale_granularity=cfg.activation_scale_granularity,
+            weight_scale_granularity=cfg.weight_scale_granularity,
         )
         calibration_logs = calibrate_all_quantizers(model, train_data, cfg)
         score, layer_scores = reconstruction_score(
             model,
             validation_data,
             batch_size=args.evaluation_batch_size,
-            temperature=cfg.kl_temperature,
         )
         result = {
             "trial": trial_index,
             "search_parameters": {key: getattr(cfg, key) for key in SEARCH_GRID_KEYS},
             "loss_weights": {key: getattr(cfg, key) for key in LOSS_GRID_KEYS},
-            "validation_reconstruction_kl": score,
-            "layer_validation_kl": layer_scores,
+            "validation_reconstruction_mse": score,
+            "layer_validation_mse": layer_scores,
             "final_training_losses": {
                 name: {
                     kind: history[-1] if history else None
@@ -183,14 +180,14 @@ def run_grid_search_fp4(args: argparse.Namespace) -> dict[str, Any]:
             },
         }
         results.append(result)
-        print(f"Trial {trial_index} validation reconstruction KL: {score:.8g}")
+        print(f"Trial {trial_index} validation reconstruction MSE: {score:.8g}")
 
         if score < best_score:
             best_score, best_trial = score, trial_index
             metadata = {
                 "format_version": 1,
                 "base_checkpoint": CHECKPOINT,
-                "selection_metric": "mean_layer_validation_reconstruction_kl",
+                "selection_metric": "mean_layer_validation_reconstruction_mse",
                 "best_trial": best_trial,
                 "best_score": best_score,
                 "assistant_outputs_file": str(Path("..") / inference_path.name),
@@ -201,6 +198,8 @@ def run_grid_search_fp4(args: argparse.Namespace) -> dict[str, Any]:
                     "quantize_mm_proj": args.quantize_mm_proj,
                     "quantize_language": args.quantize_language,
                     "quantize_weight": args.quantize_weight,
+                    "activation_scale_granularity": cfg.activation_scale_granularity,
+                    "weight_scale_granularity": cfg.weight_scale_granularity,
                     "quant_type": "fp4_e2m1",
                 },
             }
@@ -235,7 +234,7 @@ def run_grid_search_fp4(args: argparse.Namespace) -> dict[str, Any]:
     summary = {
         "best_trial": best_trial,
         "best_score": best_score,
-        "selection_metric": "mean_layer_validation_reconstruction_kl",
+        "selection_metric": "mean_layer_validation_reconstruction_mse",
         "best_quantized_model_dir": str(best_model_dir),
         "best_model_inference_file": str(inference_path),
         "best_assistant_outputs": best_assistant_outputs,
@@ -249,12 +248,11 @@ def run_grid_search_fp4(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     args = build_parser().parse_args()
-    print(args)
     start = time.time()
     summary = run_grid_search_fp4(args)
     print(
         f"Best FP4 trial: {summary['best_trial']}; "
-        f"validation KL: {summary['best_score']:.8g}; "
+        f"validation MSE: {summary['best_score']:.8g}; "
         f"elapsed: {time.time() - start:.2f}s"
     )
 

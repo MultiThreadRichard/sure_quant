@@ -21,7 +21,6 @@ import torch
 import torch.nn as nn
 
 from model.sure_quant_linear import SureQuantLinear
-from model.sure_quantizer import SureQuantizer
 from model.wrappers import CompositeBlockRotation
 from ops.block_ops import blockify, deblockify
 from ops.hadamard import BlockHadamardTransform
@@ -50,15 +49,24 @@ class BlockFP4Quantizer(nn.Module):
         group_size: Per-group scaling granularity (default 16).
     """
 
-    def __init__(self, num_bits: int = 4, group_size: int = 16, eps: float = 1e-8):
+    def __init__(
+        self,
+        num_bits: int = 4,
+        group_size: int = 16,
+        clip_ratio: float = 1.0,
+        eps: float = 1e-8,
+    ):
         super().__init__()
         if num_bits != 4:
             raise ValueError(f"BlockFP4Quantizer only supports 4 bits, got {num_bits}")
+        if not 0.0 < clip_ratio <= 1.0:
+            raise ValueError(f"clip_ratio must be in (0, 1], got {clip_ratio}")
         self.num_bits = 4
         self.q_type = "float"
         self.group_size = group_size
         self.qmax = FP4_E2M1_DATA.max  # 6.0
         self.qmin = FP4_E2M1_DATA.min  # -6.0
+        self.clip_ratio = float(clip_ratio)
         self.eps = eps
 
     def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -91,11 +99,18 @@ class BlockFP4Quantizer(nn.Module):
         # [N, M, g] → [N*M, num_groups, group_size]
         z_grouped = z.reshape(-1, num_groups, self.group_size)
 
-        # Per-group scale (symmetric, no global_scale)
+        # Per-group scale (symmetric, no global_scale).
+        # Apply clip_ratio to shrink the effective range, trading clipping of
+        # outliers for a finer quantization step (mirrors INT4 BlockUniformQuantizer).
         min_vals = z_grouped.amin(dim=-1)   # [N*M, num_groups]
         max_vals = z_grouped.amax(dim=-1)
+        center = (min_vals + max_vals) / 2
+        half_range = (max_vals - min_vals) / 2
+        clipped_half_range = half_range * self.clip_ratio
+        clipped_min = center - clipped_half_range
+        clipped_max = center + clipped_half_range
         scale, _ = calculate_qparams(
-            min_vals, max_vals,
+            clipped_min, clipped_max,
             num_bits=4, q_type="float", symmetric=True,
         )  # scale: [N*M, num_groups]
 
@@ -130,9 +145,12 @@ class SureFP4Quantizer(nn.Module):
         block_size: Block size ``g`` (must be power of two).
         num_bits: Quantization bit-width (must be 4).
         order: Order for rotation strategy.
-        rotation_strategy: ``"rotation"`` or ``"stiefel"``.
+        rotation_strategy: ``"rotation"``.
         rotation_module: Optional pre-built strategy module.
         stiefel_num_reflectors: Reflector count for stiefel strategy.
+        TODO scale_granularity: Unused; accepted for API parity with ``SureQuantizer``
+            (FP4 always uses per-group scale).
+        clip_ratio: Absmax clipping ratio in ``(0, 1]``.
     """
 
     def __init__(
@@ -144,13 +162,15 @@ class SureFP4Quantizer(nn.Module):
         rotation_strategy: str = "rotation",
         rotation_module: nn.Module | None = None,
         stiefel_num_reflectors: int = 8,
+        scale_granularity: str = "per_vector_block",
+        clip_ratio: float = 1.0,
     ):
         super().__init__()
         if dim % block_size != 0:
             raise ValueError(f"dim={dim} must be divisible by block_size={block_size}")
         if num_bits != 4:
             raise ValueError(f"SureFP4Quantizer only supports 4 bits, got {num_bits}")
-        if rotation_strategy not in ("rotation"):
+        if rotation_strategy not in ("rotation",):
             raise ValueError(f"Unknown rotation_strategy: {rotation_strategy}")
 
         self.dim = dim
@@ -160,13 +180,16 @@ class SureFP4Quantizer(nn.Module):
         self.rotation_strategy = rotation_strategy
         self.order = order
         self.stiefel_num_reflectors = int(stiefel_num_reflectors)
+        self.clip_ratio = float(clip_ratio)
 
         if rotation_module is not None:
             self.rotation = rotation_module
         else:
             self.rotation = self._build_rotation_strategy()
 
-        self.quantizer = BlockFP4Quantizer(num_bits=4, group_size=block_size)
+        self.quantizer = BlockFP4Quantizer(
+            num_bits=4, group_size=block_size, clip_ratio=clip_ratio,
+        )
 
     def _build_rotation_strategy(self) -> nn.Module:
         if self.rotation_strategy == "rotation":
@@ -205,6 +228,9 @@ def quantize_linear_layer_fp4(
     block_size: int,
     rotation_strategy: str,
     quantize_weight: bool,
+    clip_ratio: float = 1.0,
+    activation_scale_granularity: str = "per_vector_block",
+    weight_scale_granularity: str = "per_vector_block",
 ) -> SureQuantLinear:
     """Replace a single nn.Linear with an FP4-aware SureQuantLinear."""
     activation_quantizer = SureFP4Quantizer(
@@ -212,6 +238,8 @@ def quantize_linear_layer_fp4(
         block_size=block_size,
         num_bits=num_bits,
         rotation_strategy=rotation_strategy,
+        scale_granularity=activation_scale_granularity,
+        clip_ratio=clip_ratio,
     )
     weight_quantizer = None
     if quantize_weight and linear.out_features % block_size == 0:
@@ -220,6 +248,8 @@ def quantize_linear_layer_fp4(
             block_size=block_size,
             num_bits=num_bits,
             rotation_strategy=rotation_strategy,
+            scale_granularity=weight_scale_granularity,
+            clip_ratio=clip_ratio,
         )
     return SureQuantLinear(linear, activation_quantizer, weight_quantizer)
 
@@ -231,6 +261,9 @@ def _replace_linears_fp4(
     block_size: int,
     rotation_strategy: str,
     quantize_weight: bool,
+    clip_ratio: float = 1.0,
+    activation_scale_granularity: str = "per_vector_block",
+    weight_scale_granularity: str = "per_vector_block",
 ) -> int:
     """Recursively replace nn.Linear children with FP4-wrapped versions."""
     linears = [
@@ -257,6 +290,9 @@ def _replace_linears_fp4(
                 block_size=block_size,
                 rotation_strategy=rotation_strategy,
                 quantize_weight=quantize_weight,
+                clip_ratio=clip_ratio,
+                activation_scale_granularity=activation_scale_granularity,
+                weight_scale_granularity=weight_scale_granularity,
             ),
         )
         replaced += 1
@@ -273,6 +309,9 @@ def quantize_llava_model_fp4(
     quantize_mm_proj: bool = True,
     quantize_language: bool = True,
     quantize_weight: bool = True,
+    clip_ratio: float = 1.0,
+    activation_scale_granularity: str = "per_block",
+    weight_scale_granularity: str = "per_block",
 ) -> nn.Module:
     """Quantize a LLaVA model using FP4 E2M1 quantization.
 
@@ -293,6 +332,9 @@ def quantize_llava_model_fp4(
             block_size=block_size,
             rotation_strategy=rotation_strategy,
             quantize_weight=quantize_weight,
+            clip_ratio=clip_ratio,
+            activation_scale_granularity=activation_scale_granularity,
+            weight_scale_granularity=weight_scale_granularity,
         )
         print(f"Wrapped {count} {label} linear layers (FP4)")
     return model
@@ -389,6 +431,7 @@ def _compress_fp4_weights(
         # --- 与 BlockFP4Quantizer.forward() 保持一致的每组分块 FP4 量化 ---
         N, M, g = rotated.shape
         group_size = wq.quantizer.group_size
+        clip_ratio = wq.quantizer.clip_ratio
         if g % group_size != 0:
             raise ValueError(
                 f"block dimension g={g} must be divisible by group_size={group_size}"
@@ -398,11 +441,16 @@ def _compress_fp4_weights(
         # [N, M, g] -> [N*M, num_groups, group_size]
         z_grouped = rotated.reshape(-1, num_groups, group_size)
 
-        # 每组分块对称 scale
+        # 每组分块对称 scale (应用 clip_ratio 缩小有效范围)
         min_vals = z_grouped.amin(dim=-1)   # [N*M, num_groups]
         max_vals = z_grouped.amax(dim=-1)
+        center = (min_vals + max_vals) / 2
+        half_range = (max_vals - min_vals) / 2
+        clipped_half_range = half_range * clip_ratio
+        clipped_min = center - clipped_half_range
+        clipped_max = center + clipped_half_range
         scale, _ = calculate_qparams(
-            min_vals, max_vals,
+            clipped_min, clipped_max,
             num_bits=4, q_type="float", symmetric=True,
         )  # scale: [N*M, num_groups]
 
@@ -426,6 +474,7 @@ def _compress_fp4_weights(
             "weight_shape": list(module.linear.weight.shape),
             "group_size": group_size,
             "num_groups": num_groups,
+            "clip_ratio": clip_ratio,
         }
         weight_keys.add(f"{name}.linear.weight")
 
@@ -593,6 +642,13 @@ def load_quantized_model_fp4(
         quantize_mm_proj=model_cfg["quantize_mm_proj"],
         quantize_language=model_cfg["quantize_language"],
         quantize_weight=model_cfg["quantize_weight"],
+        clip_ratio=quant_cfg.get("clip_ratio", 1.0),
+        activation_scale_granularity=quant_cfg.get(
+            "activation_scale_granularity", "per_block"
+        ),
+        weight_scale_granularity=quant_cfg.get(
+            "weight_scale_granularity", "per_block"
+        ),
     )
 
     # Load float state dict

@@ -1,10 +1,9 @@
-"""LLaVA FP4 Quantization Calibration Script.
+"""LLaVA FP4 Quantization Calibration Sample Infer Script.
 
 
-TODO Usage:
+Usage:
     python llava_quant_calib_fp4.py              # run saved model inference
-    python llava_quant_calib_fp4.py --calib       # calibrate and save
-    python llava_quant_calib_fp4.py --quick       # quick single-image test
+
 """
 
 import sys
