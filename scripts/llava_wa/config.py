@@ -11,16 +11,20 @@ import torch
 from config.default_config import SureQuantConfig
 
 
+# PATH_PREFIX = "/home/ecnu03"
+PATH_PREFIX = "/home/ecnu01"
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROMPT = "Please describe this image."
 DEFAULT_INFERENCE_PROMPT = "Please describe the animal in this image\n"
 DEFAULT_INFERENCE_IMAGES = (
-    "/home/ecnu03/workspace/awq_learn/sample_img/sample1.jpg",
-    "/home/ecnu03/workspace/awq_learn/sample_img/sample2.jpg",
+    f"{PATH_PREFIX}/workspace/awq_learn/sample_img/sample1.jpg",
+    f"{PATH_PREFIX}/workspace/awq_learn/sample_img/sample2.jpg",
 )
-CHECKPOINT = "/home/ecnu03/workspace/models/llava-1.5-7b-hf"
+CHECKPOINT = f"{PATH_PREFIX}/workspace/models/llava-1.5-7b-hf"
 CALIBRATION_DATA_PATHS = (
-    "/home/ecnu03/workspace/data/flickr30k/data/test-00000-of-00009.parquet",
+    f"{PATH_PREFIX}/workspace/data/flickr30k/data/test-00000-of-00009.parquet",
 )
 LOSS_GRID_KEYS = ("lambda_rec", "lambda_dk", "lambda_bal", "lambda_range")
 SEARCH_GRID_KEYS = (
