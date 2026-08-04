@@ -90,6 +90,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Calibrate, tune, and save a SureQuant-quantized LLaVA model."
     )
+    parser.add_argument(
+        "--mode",
+        choices=("grid", "best"),
+        default="best",
+        help="Run the full grid search or recalibrate once with the saved best trial.",
+    )
+    parser.add_argument(
+        "--best-trial-config",
+        help="Path to a grid-search surequant_config.json used by --mode best.",
+    )
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "runs"))
     parser.add_argument("--image-column", default="image")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
