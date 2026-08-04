@@ -19,7 +19,6 @@ from scripts.llava_wa.persistence import load_quantized_model  # noqa: E402
 from scripts.llava_wa.search import (  # noqa: E402
     BEST_TRIAL_FALLBACK,
     build_cfg_and_scope_from_best_trial,
-    run_best_trial_calibration,
     load_best_trial_config,
     run_grid_search,
 )
@@ -27,28 +26,8 @@ from scripts.llava_wa.search import (  # noqa: E402
 
 DEFAULT_BEST_TRIAL_CONFIG = REPO_ROOT / "runs" / "best_quantized_model" / "surequant_config.json"
 
-def grid_search() -> None:
-    args = build_parser().parse_args()
-    start = time.time()
-    summary = run_grid_search(args)
-    print(
-        f"Best trial: {summary['best_trial']}; "
-        f"validation MSE: {summary['best_score']:.8g}; "
-        f"elapsed: {time.time() - start:.2f}s"
-    )
-
-
 def calibrate_with_the_best_trial() -> None:
     args = build_parser().parse_args()
-    if args.mode == "grid":
-        start = time.time()
-        summary = run_grid_search(args)
-        print(
-            f"Best trial: {summary['best_trial']}; "
-            f"validation MSE: {summary['best_score']:.8g}; "
-            f"elapsed: {time.time() - start:.2f}s"
-        )
-        return
 
     if args.best_trial_config is None and DEFAULT_BEST_TRIAL_CONFIG.is_file():
         args.best_trial_config = str(DEFAULT_BEST_TRIAL_CONFIG)
