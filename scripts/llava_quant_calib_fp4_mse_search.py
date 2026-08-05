@@ -228,6 +228,35 @@ def run_grid_search_fp4(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 encoding="utf-8",
             )
+
+        # TODO
+        trial_outputs = generate_assistant_outputs(
+            model,
+            processor,
+            args.test_images,
+            prompt_text=args.inference_prompt,
+            max_new_tokens=args.inference_max_new_tokens,
+        )
+
+        trial_path = output_dir / f"trial_{trial_index:02d}.json"
+        trial_path.write_text(
+            json.dumps(
+                {
+                    "trial": trial_index,
+                    "score": score,
+                    "prompt": args.inference_prompt,
+                    "max_new_tokens": args.inference_max_new_tokens,
+                    "outputs": trial_outputs,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        if trial_index > 20:
+            break
+
         del model, calibration_logs
         _release_cuda_memory()
 
@@ -240,9 +269,9 @@ def run_grid_search_fp4(args: argparse.Namespace) -> dict[str, Any]:
         "best_assistant_outputs": best_assistant_outputs,
         "trials": results,
     }
-    (output_dir / "grid_search_results.json").write_text(
-        json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    # (output_dir / "grid_search_results.json").write_text(
+    #     json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
+    # )
     return summary
 
 

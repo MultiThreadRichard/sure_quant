@@ -77,6 +77,12 @@ def calibrate_all_quantizers(
                 cfg,
             )
             module.quantize_weight()
+            # The weight quantizer is only needed during calibration.  Once the
+            # quantized weight has been baked into ``module.linear.weight``,
+            # release its parameters so they do not consume GPU memory while
+            # the next layers are being processed.
+            # module.quantize_weight() only execute once
+            module.weight_quantizer.to("cpu")
         logs[name] = layer_logs
         if device.type == "cuda":
             torch.cuda.empty_cache()
