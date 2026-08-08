@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -91,9 +92,9 @@ def plt_act_val_dim(np_tensor, output_path, title="Before Rot", xlabel="Hidden d
     ax.vlines(x, ymin=p99, ymax=max_val, color=color_minmax, linewidth=line_width)
 
     # -------------------------- 4. 坐标轴与样式设置 --------------------------
-    ax.set_title(title, fontsize=20, pad=15)
-    ax.set_xlabel(xlabel, fontsize=18, labelpad=10)
-    ax.set_ylabel(ylabel, fontsize=18, labelpad=10)
+    ax.set_title(title, fontsize=16, pad=15, wrap=True)
+    ax.set_xlabel(xlabel, fontsize=16, labelpad=10)
+    ax.set_ylabel(ylabel, fontsize=16, labelpad=10)
 
     # ax.set_ylim(-0.48, 0.48)
     # ax.set_ylim(-10.0, 10.0)
@@ -116,6 +117,57 @@ def plt_act_val_dim(np_tensor, output_path, title="Before Rot", xlabel="Hidden d
     plt.savefig(output_path, dpi=300)
     print(f"save to {output_path}")
 
+
+def plt_act_after_surequant(np_tensor, output_path, title="Before Rot", xlabel="Hidden dimension index", ylabel="Weight value"):
+    min_val, max_val, p1, p99, p25, p75 = calc_dimension_stats(np_tensor)
+    hidden_size = np_tensor.shape[-1]
+    x = np.arange(hidden_size)  # 每个隐藏维度对应一个x坐标
+
+    # -------------------------- 3. 绘制分段竖线图 --------------------------
+    plt.figure(figsize=(10, 8), dpi=120)
+    ax = plt.gca()
+
+    # 配色严格匹配原图
+    color_25_75 = "#f2b138"   # 黄色：四分位区间
+    color_1_99 = "#d93a6e"    # 玫红色：1/99分位区间
+    color_minmax = "#367bc1"  # 蓝色：极值区间
+    line_width = 0.6  # 细线宽，保证4096条线紧密排列成连续色带
+
+    # 1. 中间黄色段：25% ~ 75% 分位
+    ax.vlines(x, ymin=p25, ymax=p75, color=color_25_75, linewidth=line_width)
+    # 2. 红色段：1%~25% 和 75%~99%
+    ax.vlines(x, ymin=p1, ymax=p25, color=color_1_99, linewidth=line_width)
+    ax.vlines(x, ymin=p75, ymax=p99, color=color_1_99, linewidth=line_width)
+    # 3. 蓝色段：min~1% 和 99%~max
+    ax.vlines(x, ymin=min_val, ymax=p1, color=color_minmax, linewidth=line_width)
+    ax.vlines(x, ymin=p99, ymax=max_val, color=color_minmax, linewidth=line_width)
+
+    # -------------------------- 4. 坐标轴与样式设置 --------------------------
+    # ax.set_title(title, fontsize=18, pad=10)
+    ax.set_title(title, fontsize=16, pad=15, wrap=True)
+    ax.set_xlabel(xlabel, fontsize=16, labelpad=10)
+    ax.set_ylabel(ylabel, fontsize=16, labelpad=10)
+
+    # ax.set_ylim(-0.48, 0.48)
+    ax.set_ylim(-10.0, 10.0)
+
+    # ax.set_xlim(0, hidden_size)
+    ax.tick_params(axis='both', labelsize=16)
+
+    # 匹配原图样式的图例
+    legend_elements = [
+        Line2D([0], [0], color=color_minmax, lw=2, label='Min/Max'),
+        Line2D([0], [0], color=color_1_99, lw=2, label='1/99 Percentile'),
+        Line2D([0], [0], color=color_25_75, lw=2, label='25/75 Percentile')
+    ]
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=12, framealpha=0.9)
+
+    plt.tight_layout()
+    # plt.show()
+
+    
+    plt.savefig(output_path, dpi=300)
+    print(f"save to {output_path}")
 
 
 def plt_llava_lang_weight(model, output_path, stat_axis=0):
@@ -262,3 +314,61 @@ def plt_llava_vision_activation(act_list, output_path, stat_axis=0):
     for idx, act in enumerate(act_list):
         plt_act_val_dim(act, f"{output_path}/layer_{idx}_input_act.png", title=f"Layer {idx} Input Activation", ylabel="Activation Value")
         # break
+
+
+def plt_sure_encoder_x2d_xhat(acts: dict, output_path: str, plot_error: bool = False) -> None:
+    """Plot x2d (pre-quant), x_hat (post-quant), and optionally the per-dimension
+    error (x2d - x_hat) for every SureQuantLinear collected in ``acts``.
+
+    Parameters
+    ----------
+    acts : dict
+        Return value of :func:`collect_sure_encoder_x2d_xhat`, keyed by the
+        full module name; each value is ``{"x2d": Tensor, "x_hat": Tensor}``.
+    output_path : str
+        Directory where PNG files will be written.
+    plot_error : bool
+        If True, also save a third figure showing the difference ``x2d - x_hat``.
+    """
+
+    def _safe_name(key: str) -> str:
+        # Replace dots with underscores so the filename is filesystem-safe.
+        return key.replace(".", "_")
+
+    for key, pair in acts.items():
+        x2d = pair["x2d"].detach().cpu().float().numpy()   # [tokens, dim]
+        # x_hat = pair["x_hat"].detach().cpu().float().numpy()
+
+        fname = _safe_name(key)
+        print(f"fname: {fname}")
+
+        key = "_".join(key.split(".")[2:])
+
+        plt_act_val_dim(
+            x2d,
+            os.path.join(output_path, f"{fname}_before.png"),
+            title=f"{key} before SureQuant",
+            xlabel="Hidden dimension index",
+            ylabel="Activation value",
+        )
+        # break
+
+        # plt_act_val_dim(
+        #     x_hat,
+        #     os.path.join(output_path, f"{fname}_after.png"),
+        #     title=f"{key} after SureQuant",
+        #     xlabel="Hidden dimension index",
+        #     ylabel="Activation value",
+        # )
+
+        # if plot_error:
+        #     err = x2d - x_hat
+        #     plt_act_val_dim(
+        #         err,
+        #         os.path.join(output_path, f"{fname}_error.png"),
+        #         title=f"{key}  error (x2d - x_hat)",
+        #         xlabel="Hidden dimension index",
+        #         ylabel="Error value",
+        #     )
+
+    # print(f"[plt_sure_encoder_x2d_xhat] saved {len(acts)*plot_error + 2*len(acts)} figures to {output_path}")
