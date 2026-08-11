@@ -18,7 +18,6 @@ from scripts.llava_quant_calib_wa import (
     calibrate_all_quantizers,
     generate_assistant_outputs,
     loss_grid,
-    run_grid_search,
 )
 from scripts.llava_wa.persistence import (
     INT4_WEIGHTS_NAME,
@@ -280,88 +279,3 @@ def test_clip_ratio_grid_is_expanded_and_validated():
         loss_grid(_config(), {"clip_ratio": [1.1]})
 
 
-def test_grid_search_saves_best_weights_and_assistant_outputs(
-    tmp_path: Path, monkeypatch
-):
-    class FakeLlava:
-        @classmethod
-        def from_pretrained(cls, *_args, **_kwargs):
-            return cls()
-
-    processor = object()
-    calibration_data = {"layer": torch.randn(4, 4)}
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(LlavaForConditionalGeneration=FakeLlava),
-    )
-    monkeypatch.setattr(
-        "scripts.llava_wa.search.load_calib_data",
-        lambda **_kwargs: (processor, calibration_data),
-    )
-    monkeypatch.setattr(
-        "scripts.llava_wa.search.quantize_llava_model",
-        lambda model, **_kwargs: model,
-    )
-    monkeypatch.setattr(
-        "scripts.llava_wa.search.calibrate_all_quantizers",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        "scripts.llava_wa.search.reconstruction_score",
-        lambda *_args, **_kwargs: (0.125, {"layer": 0.125}),
-    )
-
-    def fake_save(_model, _processor, output_dir, metadata, **_kwargs):
-        output_dir.mkdir(parents=True)
-        (output_dir / "pytorch_model.bin").write_bytes(b"weights")
-        (output_dir / "surequant_config.json").write_text(
-            json.dumps(metadata), encoding="utf-8"
-        )
-
-    assistant_outputs = [
-        {"image": "sample1.jpg", "assistant": "first answer"},
-        {"image": "sample2.jpg", "assistant": "second answer"},
-    ]
-    monkeypatch.setattr(
-        "scripts.llava_wa.search.save_quantized_model", fake_save
-    )
-    monkeypatch.setattr(
-        "scripts.llava_wa.search.generate_assistant_outputs",
-        lambda *_args, **_kwargs: assistant_outputs,
-    )
-
-    args = build_parser().parse_args(
-        [
-            "--output-dir",
-            str(tmp_path),
-            "--calibration-steps",
-            "2",
-            "--calibration-lr",
-            "0.01",
-            "--lambda-dk-grid",
-            "0",
-            "--lambda-bal-grid",
-            "0",
-            "--lambda-range-grid",
-            "0",
-        ]
-    )
-    summary = run_grid_search(args)
-
-    best_model_dir = tmp_path / "best_quantized_model"
-    assert (best_model_dir / "pytorch_model.bin").read_bytes() == b"weights"
-    metadata = json.loads(
-        (best_model_dir / "surequant_config.json").read_text(encoding="utf-8")
-    )
-    assert metadata["assistant_outputs_file"] == "../best_model_inference.json"
-    inference = json.loads(
-        (tmp_path / "best_model_inference.json").read_text(encoding="utf-8")
-    )
-    assert inference["outputs"] == assistant_outputs
-    assert summary["best_trial"] == 1
-    assert summary["best_assistant_outputs"] == assistant_outputs
-    persisted_summary = json.loads(
-        (tmp_path / "grid_search_results.json").read_text(encoding="utf-8")
-    )
-    assert persisted_summary["best_quantized_model_dir"] == str(best_model_dir)

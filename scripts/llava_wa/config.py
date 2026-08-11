@@ -10,9 +10,10 @@ import torch
 
 from config.default_config import SureQuantConfig
 
-
+import getpass
+PATH_PREFIX = f"/home/{getpass.getuser()}"
 # PATH_PREFIX = "/home/ecnu03"
-PATH_PREFIX = "/home/ecnu01"
+# PATH_PREFIX = "/home/ecnu01"
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

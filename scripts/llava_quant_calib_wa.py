@@ -20,7 +20,7 @@ from scripts.llava_wa.search import (  # noqa: E402
     BEST_TRIAL_FALLBACK,
     build_cfg_and_scope_from_best_trial,
     load_best_trial_config,
-    run_grid_search,
+    run_best_trial_calibration,
 )
 
 
