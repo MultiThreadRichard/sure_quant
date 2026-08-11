@@ -30,6 +30,7 @@ from scripts.llava_wa.config import (
     PATH_PREFIX,
     DEFAULT_INFERENCE_PROMPT,
     build_parser,
+    DEFAULT_PROMPT
 )
 from scripts.llava_wa.modeling import (
     quantize_linear_layer,
@@ -66,8 +67,11 @@ from scripts.llava_wa.modeling_fp4 import (
 CHECKPOINT = f"{PATH_PREFIX}/workspace/models/llava-1.5-7b-hf"
 SAMPLE_IMG_DIR = f"{PATH_PREFIX}/workspace/awq_learn/sample_img"
 CALIB_DATA_PATH = f"{PATH_PREFIX}/workspace/data/flickr30k/data/test-00000-of-00009.parquet"
-SAVE_ID = "1"
-DEFAULT_SAVE_DIR = f"{PATH_PREFIX}/workspace/sure_quant/model_saved/llava_7b_sure_fp4_{SAVE_ID}"
+SAVE_ID = "03"
+# DEFAULT_SAVE_DIR = f"{PATH_PREFIX}/workspace/sure_quant/model_saved/llava_7b_sure_fp4_{SAVE_ID}"
+DEFAULT_SAVE_DIR = f"/home/ecnu01/workspace/sure_quant/logs/search_fp4_mse02/best_quantized_model"
+SAMPLE_CAR_IMG = f"/home/ecnu01/workspace/sure_quant/sample_img/car.jpg"
+
 
 
 
@@ -161,7 +165,7 @@ def infer(
     model: LlavaForConditionalGeneration,
     processor: Any,
     img_path: str,
-    prompt_text: str = DEFAULT_INFERENCE_PROMPT,
+    prompt_text: str = DEFAULT_PROMPT,
     max_new_tokens: int = 128,
 ) -> torch.Tensor:
     """Run inference on a single image and print the result."""
@@ -362,7 +366,7 @@ def example_calib(args) -> None:
     infer(quantized_model, processor, os.path.join(SAMPLE_IMG_DIR, "sample2.jpg"))
 
 
-def run_saved_model() -> None:
+def run_saved_model_fp4() -> None:
     """Load a saved quantized model and run inference."""
     save_path = DEFAULT_SAVE_DIR
     print(f"\n========== Loading saved quantized model from {save_path} ==========")
@@ -370,8 +374,27 @@ def run_saved_model() -> None:
     loaded_model = load_quantized_model_fp4(
         save_path, device_map="cuda", torch_dtype=torch.float16,
     )
+    print(type(loaded_model))
+    # print(loaded_model)
 
-    processor = AutoProcessor.from_pretrained(CHECKPOINT)
+    processor = AutoProcessor.from_pretrained(save_path)
+
+    # infer(loaded_model, processor, os.path.join(SAMPLE_IMG_DIR, "sample1.jpg"))
+    # infer(loaded_model, processor, os.path.join(SAMPLE_IMG_DIR, "sample2.jpg"))
+    infer(loaded_model, processor, SAMPLE_CAR_IMG)
+
+
+
+def run_saved_model_int4() -> None:
+    """Load a saved quantized model and run inference."""
+    save_path = "/home/ecnu01/sure_quant_models/20260803/best_quantized_model"
+    print(f"\n========== Loading saved quantized model from {save_path} ==========")
+
+    loaded_model = load_quantized_model(
+        save_path, device_map="cuda", torch_dtype=torch.float16,
+    )
+
+    processor = AutoProcessor.from_pretrained(save_path)
 
     infer(loaded_model, processor, os.path.join(SAMPLE_IMG_DIR, "sample1.jpg"))
     infer(loaded_model, processor, os.path.join(SAMPLE_IMG_DIR, "sample2.jpg"))
@@ -386,7 +409,10 @@ def main() -> None:
 
     # example_calib(args)
 
-    run_saved_model()
+    run_saved_model_fp4()
+
+    # run_saved_model_int4()
+
 
 
 if __name__ == "__main__":

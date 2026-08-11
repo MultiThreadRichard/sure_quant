@@ -181,3 +181,66 @@ def load_calib_data(
         torch.cuda.empty_cache()
     print("Released full-precision calibration model memory")
     return processor, calibration_data
+
+
+def load_data_for_eval_logits(
+    *,
+    calibration_sample_num: int,
+    eval_sample_num: int,
+    prompt_text: str,
+    image_column: str,
+    device_map: str,
+    torch_dtype: torch.dtype,
+    max_new_tokens: int = 128,
+   ) -> list[tuple[dict[str, torch.Tensor], torch.Tensor]]:
+    """Load the last ``eval_sample_num`` samples and run inference to get logits.
+
+    Returns:
+       a list of ``(inputs, logits)`` tuples
+    """
+    try:
+        from datasets import load_dataset
+        from transformers import AutoProcessor, LlavaForConditionalGeneration
+    except ImportError as error:
+        raise RuntimeError(
+            "load_data_for_eval_logits requires datasets and transformers"
+        ) from error
+
+    processor = AutoProcessor.from_pretrained(CHECKPOINT)
+    model = LlavaForConditionalGeneration.from_pretrained(
+        CHECKPOINT, device_map=device_map, torch_dtype=torch_dtype
+    )
+    model.eval()
+    data_path = CALIBRATION_DATA_PATHS[0]
+    dataset = load_dataset("parquet", data_files=data_path, split="train")
+    if len(dataset) < calibration_sample_num + eval_sample_num:
+        raise ValueError("load_data_for_eval_logits len(dataset) not enough")
+
+    # Select the last ``eval_sample_num`` samples as the held-out eval set.
+    total = len(dataset)
+    dataset = dataset.select(range(total - eval_sample_num, total))
+    print(f"len(dataset) for eval logits: {len(dataset)}")
+
+    prompt = make_prompt(processor, prompt_text)
+    input_device = _model_input_device(model)
+    eval_pairs: list[tuple[dict[str, torch.Tensor], torch.Tensor]] = []
+    with torch.inference_mode():
+        for index, sample in enumerate(dataset):
+            inputs = processor(
+                images=sample[image_column],
+                text=prompt,
+                return_tensors="pt",
+            ).to(input_device)
+
+            output = model.generate(**inputs, max_new_tokens=max_new_tokens)
+            # Move inputs back to CPU so the returned pairs are device-agnostic
+            cpu_inputs = {k: v.detach().cpu() for k, v in inputs.items()}
+            eval_pairs.append((cpu_inputs, output[0].detach().cpu()))
+
+    del model, dataset
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    print(f">>>>>>>>>> load_data_for_eval_logits: {len(eval_pairs)} done")
+    return eval_pairs
+

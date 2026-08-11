@@ -55,6 +55,7 @@ class BlockFP4Quantizer(nn.Module):
         group_size: int = 16,
         clip_ratio: float = 1.0,
         eps: float = 1e-8,
+        sign_for_w: bool = False
     ):
         super().__init__()
         if num_bits != 4:
@@ -68,6 +69,13 @@ class BlockFP4Quantizer(nn.Module):
         self.qmin = FP4_E2M1_DATA.min  # -6.0
         self.clip_ratio = float(clip_ratio)
         self.eps = eps
+        self.sign_for_w = sign_for_w
+        self.input_z_shape = None # [N, M, g]
+        self.num_groups = None
+        self.codes = None
+        self.scale = None
+        # self.register_buffer("codes", None) # [N*M, num_groups, group_size]
+        # self.register_buffer("scale", None) # [N*M, num_groups]
 
     def forward(self, z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """FP4-quantize a block-partitioned tensor.
@@ -99,6 +107,10 @@ class BlockFP4Quantizer(nn.Module):
         # [N, M, g] → [N*M, num_groups, group_size]
         z_grouped = z.reshape(-1, num_groups, self.group_size)
 
+        if self.sign_for_w:
+            self.input_z_shape = z.shape
+            self.num_groups = num_groups
+
         # Per-group scale (symmetric, no global_scale).
         # Apply clip_ratio to shrink the effective range, trading clipping of
         # outliers for a finer quantization step (mirrors INT4 BlockUniformQuantizer).
@@ -114,8 +126,15 @@ class BlockFP4Quantizer(nn.Module):
             num_bits=4, q_type="float", symmetric=True,
         )  # scale: [N*M, num_groups]
 
+        if self.sign_for_w:
+            self.scale = scale.detach().cpu()
+
         scale_bc = scale.unsqueeze(-1)  # [N*M, num_groups, 1]
         codes = FP4_E2M1_DATA.cast_to_fp4(z_grouped / scale_bc)
+
+        if self.sign_for_w:
+            self.codes = codes.detach().cpu()
+        
         z_dequant = codes * scale_bc
 
         # Reshape back to [N, M, g]
@@ -128,6 +147,7 @@ class BlockFP4Quantizer(nn.Module):
         scale = scale.reshape(N, M, num_groups)
 
         return z_hat, scale
+
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +184,7 @@ class SureFP4Quantizer(nn.Module):
         stiefel_num_reflectors: int = 8,
         scale_granularity: str = "per_vector_block",
         clip_ratio: float = 1.0,
+        sign_for_w: bool = False
     ):
         super().__init__()
         if dim % block_size != 0:
@@ -188,7 +209,7 @@ class SureFP4Quantizer(nn.Module):
             self.rotation = self._build_rotation_strategy()
 
         self.quantizer = BlockFP4Quantizer(
-            num_bits=4, group_size=block_size, clip_ratio=clip_ratio,
+            num_bits=4, group_size=block_size, clip_ratio=clip_ratio, sign_for_w=sign_for_w
         )
 
     def _build_rotation_strategy(self) -> nn.Module:
@@ -250,6 +271,7 @@ def quantize_linear_layer_fp4(
             rotation_strategy=rotation_strategy,
             scale_granularity=weight_scale_granularity,
             clip_ratio=clip_ratio,
+            sign_for_w=True,
         )
     return SureQuantLinear(linear, activation_quantizer, weight_quantizer)
 
@@ -410,7 +432,7 @@ def _compress_fp4_weights(
         if not isinstance(module, SureQuantLinear) or module.weight_quantizer is None:
             continue
 
-        wq = module.weight_quantizer
+        wq = module.weight_quantizer # SureFP4Quantizer
         # Verify it is an FP4 quantizer
         if not isinstance(wq.quantizer, BlockFP4Quantizer):
             raise ValueError(
@@ -421,55 +443,23 @@ def _compress_fp4_weights(
             raise ValueError(
                 f"{name}: FP4 persistence requires num_bits=4, got {wq.num_bits}"
             )
-
-        device = module.linear.weight.device
-        wq.to(device=device).eval()
-        weight_t = module.linear.weight.detach().T.contiguous()
-        rotated = wq.rotation(blockify(weight_t, wq.block_size))
-        # rotated: [in_features, M, g]
-
-        # --- 与 BlockFP4Quantizer.forward() 保持一致的每组分块 FP4 量化 ---
-        N, M, g = rotated.shape
-        group_size = wq.quantizer.group_size
-        clip_ratio = wq.quantizer.clip_ratio
-        if g % group_size != 0:
-            raise ValueError(
-                f"block dimension g={g} must be divisible by group_size={group_size}"
-            )
-        num_groups = g // group_size
-
-        # [N, M, g] -> [N*M, num_groups, group_size]
-        z_grouped = rotated.reshape(-1, num_groups, group_size)
-
-        # 每组分块对称 scale (应用 clip_ratio 缩小有效范围)
-        min_vals = z_grouped.amin(dim=-1)   # [N*M, num_groups]
-        max_vals = z_grouped.amax(dim=-1)
-        center = (min_vals + max_vals) / 2
-        half_range = (max_vals - min_vals) / 2
-        clipped_half_range = half_range * clip_ratio
-        clipped_min = center - clipped_half_range
-        clipped_max = center + clipped_half_range
-        scale, _ = calculate_qparams(
-            clipped_min, clipped_max,
-            num_bits=4, q_type="float", symmetric=True,
-        )  # scale: [N*M, num_groups]
-
-        # 计算 FP4 码值 (cast_to_fp4 返回 float32, 值在 [-6.0, 6.0])
-        scale_bc = scale.unsqueeze(-1)  # [N*M, num_groups, 1]
-        codes = FP4_E2M1_DATA.cast_to_fp4(z_grouped / scale_bc) # [N*M, num_groups, group_size]
-
-        # 还原形状到 [N, M, g]
-        codes = codes.reshape(N, M, g)
+        
+        blk_quantizer = wq.quantizer # BlockFP4Quantizer
+        N, M, g = blk_quantizer.input_z_shape
+        num_groups = blk_quantizer.num_groups
+        group_size = blk_quantizer.group_size
+        clip_ratio = blk_quantizer.clip_ratio
+        codes = blk_quantizer.codes # [N*M, num_groups, group_size]
 
         # 打包为 uint8 (每两个 FP4 值共用一个字节)
-        packed = _pack_fp4_signed(codes)
+        packed = _pack_fp4_signed(codes.reshape(N, M, g))
 
         # 保存 scale: [N*M, num_groups] -> [N, M, num_groups]
-        scale = scale.reshape(N, M, num_groups)
+        scale = blk_quantizer.scale.reshape(N, M, num_groups)
 
         layers[name] = {
             "packed_weight": packed,
-            "scale": scale.detach().cpu(),
+            "scale": scale,
             "rotated_shape": list(codes.shape),
             "weight_shape": list(module.linear.weight.shape),
             "group_size": group_size,
@@ -510,31 +500,32 @@ def _restore_fp4_weights(model: nn.Module, artifact: dict[str, Any]) -> None:
         rotated_shape = tuple(int(v) for v in state["rotated_shape"])
         device = module.linear.weight.device
 
-        # Unpack uint8 → FP4 float codes
+        # Unpack uint8 → FP4 float codes, codes: [N*M, num_groups, group_size]
         codes = _unpack_fp4_signed(
             state["packed_weight"], rotated_shape, dtype=torch.float32,
         ).to(device=device)
 
         # Dequantize using stored per-group scale
-        scale = state["scale"].to(device=device)
-        N, M, g = rotated_shape
+        scale = state["scale"].to(device=device) # [N, M, num_groups]
+        N, M, _ = scale.shape
         group_size = int(state["group_size"])
         num_groups = int(state["num_groups"])
 
         # Broadcast scale
-        scale_bc = scale.reshape(N, M, num_groups, 1)
-        scale_bc = scale_bc.expand(-1, -1, -1, group_size).reshape(N, M, g)
+        scale_bc = scale.reshape(-1, num_groups).unsqueeze(-1) # [N*M, num_groups, 1]
 
-        rotated = codes * scale_bc.to(codes.dtype)
+        w_dequant = codes * scale_bc.to(codes.dtype)
+        w_dequant = w_dequant.reshape(N, M ,-1)
+        assert w_dequant.shape[-1] == num_groups * group_size, f"Dequantized shape mismatch: {w_dequant.shape} vs expected {N, M, num_groups * group_size}"
 
         # Inverse rotation to recover weight
-        weight_t = deblockify(module.weight_quantizer.rotation.inverse(rotated))
+        weight_t = deblockify(module.weight_quantizer.rotation.inverse(w_dequant))
         restored = weight_t.T.to(dtype=module.linear.weight.dtype)
 
         if list(restored.shape) != state["weight_shape"]:
             raise ValueError(
                 f"{name}: restored shape {list(restored.shape)} does not match "
-                f"saved shape {state['weight_shape']}"
+                f"saved state['weight_shape']: {state['weight_shape']}"
             )
         module.linear.weight.copy_(restored)
 
@@ -618,7 +609,7 @@ def load_quantized_model_fp4(
     output_dir = Path(output_dir)
     metadata = json.loads((output_dir / "surequant_config.json").read_text(encoding="utf-8"))
 
-    quant_cfg = metadata["surequant"]
+    quant_cfg = metadata["surequant"] # 来自保存时的SureQuantConfig
     model_cfg = metadata["model_quantization"]
     storage = metadata.get("weight_storage", {})
     is_fp4_checkpoint = storage.get("format") == "surequant_packed_fp4"
@@ -693,28 +684,3 @@ def _relocate_custom_module_params_to_ref_device(model: nn.Module) -> int:
                     buffer.data = buffer.data.to(device=ref_device, dtype=buffer.dtype)
                     moved += 1
     return moved
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-# def _relocate_fp4_module_params(model: nn.Module) -> int:
-#     """Align late-created FP4 quantizer state with each wrapped linear's device."""
-#     moved = 0
-#     for module in model.modules():
-#         if not isinstance(module, SureQuantLinear):
-#             continue
-#         ref_device = module.linear.weight.device
-#         for quantizer in (module.activation_quantizer, module.weight_quantizer):
-#             if quantizer is None:
-#                 continue
-#             for parameter in quantizer.parameters():
-#                 if parameter.device != ref_device:
-#                     parameter.data = parameter.data.to(device=ref_device, dtype=parameter.dtype)
-#                     moved += 1
-#             for buffer in quantizer.buffers():
-#                 if buffer.device != ref_device:
-#                     buffer.data = buffer.data.to(device=ref_device, dtype=buffer.dtype)
-#                     moved += 1
-#     if moved:
-#         print(f"[FP4 load] relocated {moved} quantizer param/buffer tensors")
-#     return moved

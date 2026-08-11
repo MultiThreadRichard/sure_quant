@@ -55,30 +55,44 @@ CUDA_VISIBLE_DEVICES=0 python mme/quant_llava_int4.py \
 """
 
 
-def llava_full_infer():
-    checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+def llava_full_infer(args):
+    utils.seed_everything(args.seed)
+
+    # checkpoint = "/home/ccwan/stu_Jiangtp/model_repo/llava-7b-hf"
+    checkpoint = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
+
 
     # original model
     model = LlavaForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16).eval()
     processor = AutoProcessor.from_pretrained(checkpoint)
 
-    print(model)
+    # print(model)
 
 
     # Confirm generations of the quantized model look sane.
     print("========== SAMPLE GENERATION ==============")
+    # messages = [
+    #     {
+    #         "role": "user",
+    #         "content": [
+    #             {"type": "text", "text": "Please describe the animal in this image\n"},
+    #             {"type": "image"},
+    #         ],
+    #     },
+    # ]
     messages = [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "Please describe the animal in this image\n"},
+                {"type": "text", "text": "Please describe this image.\n"},
                 {"type": "image"},
             ],
         },
     ]
     prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
-
+    # raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    # raw_image = Image.open("/home/ecnu01/workspace/sure_quant/sample_img/two_dogs.jpg")
+    raw_image = Image.open("/home/ecnu01/workspace/sure_quant/sample_img/cat1.jpg")
 
     inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(model.device)
 
@@ -95,17 +109,28 @@ def infer(vlm_llava):
 
     # Confirm generations of the quantized model look sane.
     print("========== SAMPLE GENERATION ==============")
+    # messages = [
+    #     {
+    #         "role": "user",
+    #         "content": [
+    #             {"type": "text", "text": "Please describe the animal in this image\n"},
+    #             {"type": "image"},
+    #         ],
+    #     },
+    # ]
     messages = [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "Please describe the animal in this image\n"},
+                {"type": "text", "text": "Please describe this image.\n"},
                 {"type": "image"},
             ],
         },
     ]
     prompt = processor.apply_chat_template(messages, add_generation_prompt=True)
-    raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    # raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
+    # raw_image = Image.open("/home/ecnu01/workspace/sure_quant/sample_img/two_dogs.jpg")
+    raw_image = Image.open("/home/ecnu01/workspace/sure_quant/sample_img/cat1.jpg")
 
 
     inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(model.device)
@@ -316,7 +341,9 @@ def main(args):
                     observer_type="minmax",
                 )
 
-    mme_test(model)
+    # mme_test(model)
+
+    infer(model)
 
     print(">>>>>>>> done")
 
@@ -834,4 +861,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+
+    # llava_full_infer(args)
 

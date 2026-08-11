@@ -206,6 +206,12 @@ def load_quantized_model(
 
     output_dir = Path(output_dir)
     metadata = json.loads((output_dir / "surequant_config.json").read_text(encoding="utf-8"))
+
+    # TODO delete
+    print(f"metadata: {json.dumps(metadata, indent=2, ensure_ascii=False)}")
+    metadata["base_checkpoint"] = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
+
+
     quant_cfg = metadata["surequant"]
     model_cfg = metadata["model_quantization"]
     model = LlavaForConditionalGeneration.from_pretrained(
