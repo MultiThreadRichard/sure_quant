@@ -25,11 +25,6 @@ from scripts.llava_wa.config import (
     DEFAULT_INFERENCE_PROMPT,
     build_parser,
 )
-from scripts.llava_wa.modeling import (
-    quantize_linear_layer,
-    quantize_llava_model,
-    selected_linear_names,
-)
 from scripts.llava_wa.calibration import (
     compute_kl_for_quantization,
     compute_cos_similarity,
@@ -41,14 +36,13 @@ from scripts.llava_wa.data import (
     make_prompt,
     generate_assistant_outputs,
 )
-from scripts.llava_wa.persistence import save_quantized_model, load_quantized_model, _jsonable_config
+from scripts.llava_wa.persistence import _jsonable_config
 from scripts.llava_wa.search import seed_everything
 
+from scripts.llava_wa.modeling_fp4 import load_quantized_model_fp4
 
 """
-加载后int4模型, mme评估
-
-CUDA_VISIBLE_DEVICES=1 nohup python tests/test_load_int4.py > tests/llava_load_int4_lang02.log 2>&1 &
+加载后fp4模型, mme评估
 """
 
 
@@ -82,12 +76,8 @@ SAMPLE_PATH_LIST = [
     f"{SAMPLE_IMG_DIR}/men.png",
 ]
 
-# int4
-# QMODEL_PATH = "/home/ecnu01/sure_quant_models/20260808/best_quantized_model"
-# QMODEL_PATH = "/home/ecnu01/sure_quant_models/w4a16_language_only/best_quantized_model"
-QMODEL_PATH = "/home/ecnu01/sure_quant_models/w4a16_language_only/20260824/best_quantized_model"
-
-
+# fp4
+QMODEL_PATH = "/home/ecnu01/workspace/sure_quant/logs/search_fp4_mse02/best_quantized_model"
 
 
 # ---------------------------------------------------------------------------
@@ -119,12 +109,12 @@ def infer(
     return output[0], decoded
 
 
-def run_saved_model_int4() -> None:
+def run_saved_model_fp4() -> None:
     """Load a saved quantized model and run inference."""
     save_path = QMODEL_PATH
     print(f"\n========== Loading saved quantized model from {save_path} ==========")
 
-    loaded_model = load_quantized_model(
+    loaded_model = load_quantized_model_fp4(
         save_path, device_map="cuda", torch_dtype=torch.float16,
     )
 
@@ -273,11 +263,11 @@ def mme_test(model, processor):
 
 
 
-def run_mme_int4():
+def run_mme_fp4():
     save_path = QMODEL_PATH
     print(f"\n========== Loading saved quantized model from {save_path} ==========")
 
-    loaded_model = load_quantized_model(
+    loaded_model = load_quantized_model_fp4(
         save_path, device_map="cuda", torch_dtype=torch.float16,
     )
 
@@ -291,7 +281,7 @@ def run_mme_int4():
 # CLI entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    run_mme_int4()
+    run_mme_fp4()
 
 
 
