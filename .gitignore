@@ -53,3 +53,5 @@ logs/
 *.bak
 *.old
 model_saved/
+val_small/
+bak/

@@ -4,6 +4,7 @@ from typing import Any
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from config.default_config import SureQuantConfig
 from loss.reconstruction import reconstruction_loss
@@ -272,6 +273,45 @@ def compute_kl_for_quantization(
 
     return kl.item()
 
+
+def compute_cos_similarity(fp_weight: torch.Tensor, q_weight: torch.Tensor):
+    fp_weight = fp_weight.detach().cpu().flatten().float()
+    q_weight = q_weight.detach().cpu().flatten().float()
+    eval_len = min(len(fp_weight), len(q_weight))
+    fp_weight = fp_weight[:eval_len]
+    q_weight = q_weight[:eval_len]
+    return F.cosine_similarity(fp_weight, q_weight, dim=0).item()
+
+
+def compute_pearson_correlation(x: torch.Tensor, y: torch.Tensor):
+    """
+    计算两个张量的皮尔逊相关系数 PCC
+    x, y: 任意形状的张量（会自动展平）
+    返回: PCC 值，范围 [-1,1]
+    """
+    # 展平成一维
+    x = x.detach().cpu().flatten().float()
+    y = y.detach().cpu().flatten().float()
+
+    eval_len = min(len(x), len(y))
+    x = x[:eval_len]
+    y = y[:eval_len]
+
+    # 减去均值
+    x_mean = x - x.mean()
+    y_mean = y - y.mean()
+
+    # 计算分子（协方差部分）
+    numerator = (x_mean * y_mean).sum()
+    
+    # 计算分母（标准差乘积）
+    denominator = torch.sqrt(torch.sum(x_mean ** 2)) * torch.sqrt(torch.sum(y_mean ** 2))
+    
+    # 防止除 0
+    eps = 1e-8
+    pcc = numerator / (denominator + eps)
+    
+    return pcc.item()
 
 # @torch.inference_mode()
 # def last_layer_reconstruction_score(
