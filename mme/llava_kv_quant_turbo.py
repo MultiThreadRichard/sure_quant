@@ -12,9 +12,16 @@ from qwen_vl_utils import process_vision_info
 
 
 import sys
-sys.path.append("/home/ccwan/stu_Jiangtp/turboquant_plus")
+from pathlib import Path
+# sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from turboquant import TurboQuant, TurboQuantMSE, KVCacheCompressor
 from turboquant.outlier import OutlierTurboQuant
+
+from eval_out_logits import compute_cos_similarity, compute_pearson_correlation, compute_kl_for_quantization
 
 
 def turbo_compress_kv(kv: dict):
@@ -114,240 +121,6 @@ def _compress_outlier(k_cache, v_cache, k_bits, v_bits, head_dim):
     return k_hat, v_hat, ratio
 
 
-def compute_cos_similarity(fp_weight: torch.Tensor, q_weight: torch.Tensor):
-    fp_weight = fp_weight.detach().cpu().flatten().float()
-    q_weight = q_weight.detach().cpu().flatten().float()
-    eval_len = min(len(fp_weight), len(q_weight))
-    fp_weight = fp_weight[:eval_len]
-    q_weight = q_weight[:eval_len]
-    return F.cosine_similarity(fp_weight, q_weight, dim=0).item()
-
-
-def compute_pearson_correlation(x: torch.Tensor, y: torch.Tensor):
-    """
-    计算两个张量的皮尔逊相关系数 PCC
-    x, y: 任意形状的张量（会自动展平）
-    返回: PCC 值，范围 [-1,1]
-    """
-    # 展平成一维
-    x = x.detach().cpu().flatten().float()
-    y = y.detach().cpu().flatten().float()
-
-    eval_len = min(len(x), len(y))
-    x = x[:eval_len]
-    y = y[:eval_len]
-
-    # 减去均值
-    x_mean = x - x.mean()
-    y_mean = y - y.mean()
-
-    # 计算分子（协方差部分）
-    numerator = (x_mean * y_mean).sum()
-    
-    # 计算分母（标准差乘积）
-    denominator = torch.sqrt(torch.sum(x_mean ** 2)) * torch.sqrt(torch.sum(y_mean ** 2))
-    
-    # 防止除 0
-    eps = 1e-8
-    pcc = numerator / (denominator + eps)
-    
-    return pcc.item()
-
-
-def compute_kl_for_quantization(
-    fp_weight: torch.Tensor,  # 全精度权重
-    q_weight: torch.Tensor,   # 量化后权重
-    fig_id: str = "",
-    bins: int = 256,          # 直方图分箱数(bin)
-    eps: float = 1e-10,        # 防止 log(0)
-    paint: bool = False,
-) -> float:
-    """
-    计算模型权重 全精度分布 P 与 量化分布 Q 之间的 KL 散度
-    fp_weight 和 q_weight 形状相同
-    """
-    # output_path = f'/home/ecnu01/workspace/awq_learn/eval_test_sample/' + fig_id
-    # if paint:
-    #     os.makedirs(output_path, exist_ok=True)
-
-    # save_fig_path1 = f'{output_path}/fp_flat.png'
-    # save_fig_path2 = f'{output_path}/q_flat.png'
-    # save_fig_path3 = f'{output_path}/fp_hist.png'
-    # save_fig_path4 = f'{output_path}/q_hist.png'
-    # save_fig_path5 = f'{output_path}/norm_p.png'
-    # save_fig_path6 = f'{output_path}/norm_q.png'
-    # save_fig_path7 = f'{output_path}/clamp_p.png'
-    # save_fig_path8 = f'{output_path}/clamp_q.png'
-
-    # 1. 展平权重 (权重矩阵是多维的，展平成一维计算)
-    fp_flat = fp_weight.to(torch.float32).detach().cpu().flatten()
-    q_flat = q_weight.to(torch.float32).detach().cpu().flatten()
-
-    # if paint:
-    #     plt_hist(fp_flat, save_fig_path1)
-    #     plt_hist(q_flat, save_fig_path2)
-
-    # 2. 统一取值范围（必须用相同的 min/max 分箱，否则 KL 无意义）
-    min_val = min(fp_flat.min(), q_flat.min())
-    max_val = max(fp_flat.max(), q_flat.max())
-
-    # 3. 把一个一维张量里的数字，分成若干区间，统计每个区间有多少个数，返回每个区间的数量
-    fp_hist = torch.histc(fp_flat, bins=bins, min=min_val, max=max_val)
-    q_hist = torch.histc(q_flat, bins=bins, min=min_val, max=max_val)
-
-    # if paint:
-    #     plt_distribution_frequency(fp_hist, save_fig_path3)
-    #     plt_distribution_frequency(q_hist, save_fig_path4)
-
-    # 4. 转化为频率分布，norm到[0,1] 防止后续KL计算发生nan
-    p = fp_hist / (fp_hist.sum())
-    q = q_hist / (q_hist.sum())
-
-    # if paint:
-    #     plt_distribution_frequency(p, save_fig_path5)
-    #     plt_distribution_frequency(q, save_fig_path6)
-
-    # 5. 数值安全保护
-    p = torch.clamp(p, eps, 1.0)
-    q = torch.clamp(q, eps, 1.0)
-
-    # if paint:
-    #     plt_distribution_frequency(p, save_fig_path7)
-    #     plt_distribution_frequency(q, save_fig_path8)
-
-    # 6. 计算 KL(P || Q)：用量化分布 Q 近似真实分布 P
-    kl = torch.sum(p * torch.log(p / q))
-
-    return kl.item()
-
-
-def load_dataset_from_local(path):
-    trainset = load_dataset('parquet', data_files=path, split='train')
-    # testset = load_dataset('parquet', data_files=path, split='test')
-    print(f'len(trainset): {len(trainset)}')
-    # print(type(trainset))
-    # print(f'len(testset): {len(testset)}')
-    # print(type(testset))
-
-    messages = []
-    for item in trainset:
-        # print(item)
-        # break
-        # mme_data = {
-        #     'question_id': 'code_reasoning/0020.png',
-        #     'image': Image.open('path_to_image/code_reasoning/0020.png'),  # 替换为实际路径
-        #     'question': 'Is a python code shown in the picture? Please answer yes or no.',
-        #     'answer': 'Yes',
-        #     'category': 'code_reasoning'
-        # }
-
-        msg_item = [{
-            "role": "user",
-            "content": [
-                {"type": "image", "image": item['image']},
-                {"type": "text", "text": item['question']}
-            ]
-        }]
-        messages.append(msg_item)
-
-    return trainset, messages
-
-
-def speed_compute(input_len, generate_len, t_elapsed) -> str:
-    new_generated_tokens = generate_len - input_len
-    return new_generated_tokens / t_elapsed
-
-
-def average_data_list(float_list):
-    if len(float_list) == 0:
-        return 0
-    return sum(float_list) / len(float_list)
-
-
-def mme_test(vlm_llava):
-    # TO MOD
-    data_path_list = [
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00001-of-00004-7d22c7f1aba6fca4.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00002-of-00004-594798fd3f5b029c.parquet',
-        '/home/ccwan/stu_Jiangtp/data/MME/data/test-00003-of-00004-53ae1794f93b1e35.parquet',
-    ]
-
-    # model = vlm_llava.model
-    processor = vlm_llava.processor
-
-    # TO MOD
-    output_path = '/home/ccwan/stu_Jiangtp/turboquant_plus/mme'
-    os.makedirs(output_path, exist_ok=True)
-
-    turn = 0
-    speed_list = []
-
-    t_benchmark_start = time.perf_counter()
-    for data_path in data_path_list:
-        t_data, messages = load_dataset_from_local(data_path)
-        print(f'>>>>>>>>> load {data_path}')
-        # break
-
-        print('>>>>>>>>> start eval')
-        mode = 'a'
-        sp_list = []
-        with open(os.path.join(output_path, f'eval_results0{turn}.txt'), mode, encoding="utf-8") as fout:
-            for item, msg_item in tqdm(zip(t_data, messages)):
-                # torch.cuda.empty_cache()
-
-                # 使用 processor 处理输入
-                text = processor.apply_chat_template(msg_item, tokenize=False, add_generation_prompt=True)
-                image_inputs, video_inputs = process_vision_info(msg_item)
-                inputs = processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt"
-                ).to("cuda")
-                
-                # print(inputs)
-                # print(type(inputs)) # <class 'transformers.feature_extraction_utils.BatchFeature'>
-                # print(inputs.keys())
-                # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
-                # print(f"inputs['attention_mask'].shape: {inputs['attention_mask'].shape}")
-                # print(f"inputs['pixel_values'].shape: {inputs['pixel_values'].shape}")
-                # print(f"inputs['image_grid_thw'].shape: {inputs['image_grid_thw'].shape}")
-
-                start = time.perf_counter()
-
-                # TODO
-                generated_ids = vlm_llava.generate_for_mme(inputs)
-                # generated_ids = model.generate(**inputs, max_new_tokens=256)
-                print(f"generated_ids.shape: {generated_ids.shape}")
-
-                t_elapsed = time.perf_counter() - start
-
-                sp_list.append(speed_compute(inputs['input_ids'].shape[-1], generated_ids.shape[-1], t_elapsed))
-
-                response = processor.batch_decode(
-                    generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )
-                # 打印结果
-                # print("Generated Response:", response)
-
-                print(item['category'], item['question_id'], item['question'], item['answer'], response, sep='\t', file=fout)
-                # break
-        
-        speed_list.append(average_data_list(sp_list))
-
-        print(f'>>>>>>>>> end eval')
-        torch.cuda.empty_cache()
-        turn += 1
-
-        # break
-
-    t_benchmark_end = time.perf_counter()
-
-    print(f'>>>>>>>>> complete turn: {turn}')
-    print(f'>>>>>>>>> total elapsed time: {t_benchmark_end - t_benchmark_start} s')
-    print(f'average infer speed: {average_data_list(speed_list):.2f} token/s')
 
 
 def llava_full_infer(raw_image):
@@ -644,71 +417,6 @@ class INT4RTNQuantizer:
     def dequantize(quantized: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
         return quantized.float() * scale
 
-# ===================== KV量化器 =====================
-# class LLaVAKVOptimizedQuantizer:
-#     def __init__(self, model):
-#         self.model = model
-#         self.quant = INT4RTNQuantizer()
-
-#     def quantize_prefill(self, past_kv: DynamicCache) -> DynamicCache:
-#         print(f"len(past_kv): {len(past_kv)}")
-#         for i in range(len(past_kv)):
-#             k, v = past_kv[i]
-#             # print(">>>>>>>>>>>>>>>")
-#             # print(f"Layer {i} | k shape: {k.shape}, v shape: {v.shape}")
-#             # print(f"type(k): {type(k)}, type(v): {type(v)}")
-
-#             qk, sk = self.quant.quantize(k)
-#             qv, sv = self.quant.quantize(v)
-#             # print(f"Layer {i} | qk shape: {qk.shape}, qv shape: {qv.shape}")
-#             # print(f"type(qk): {type(qk)}, type(qv): {type(qv)}")
-#             # print(f"qk: {qk}, sk: {sk}")
-#             # print(f"qv: {qv}, sv: {sv}")
-            
-#             # past_kv[i] = (
-#             #     self.quant.dequantize(qk, sk).to(k.dtype),
-#             #     self.quant.dequantize(qv, sv).to(v.dtype)
-#             # )
-#             past_kv.key_cache[i] = self.quant.dequantize(qk, sk).to(k.dtype)
-#             past_kv.value_cache[i] = self.quant.dequantize(qv, sv).to(v.dtype)
-#             # past_kv.key_cache[i] torch.Size([1, 32, 596, 128])
-#             # past_kv.value_cache[i] torch.Size([1, 32, 596, 128])
-#             print(f"Layer {i} | Dequantized k shape: {past_kv.key_cache[i].shape}, Dequantized v shape: {past_kv.value_cache[i].shape}")
-#             # print(f"type(past_kv.key_cache[i]): {type(past_kv.key_cache[i])}")
-#             # print(f"type(past_kv.value_cache[i]): {type(past_kv.value_cache[i])}")
-
-#         return past_kv
-
-#     def quantize_decode_incremental(self, past_kv: DynamicCache, seq_len_before: int) -> DynamicCache:
-#         for i in range(len(past_kv)):
-#             k, v = past_kv[i]
-#             # print(f"Layer {i} | k shape: {k.shape}, v shape: {v.shape}")
-
-#             # 历史已量化KV
-#             k_hist = k[:, :, :seq_len_before, :]
-#             v_hist = v[:, :, :seq_len_before, :]
-
-#             # 新增1个token的KV（仅量化这里）
-#             k_new = k[:, :, seq_len_before:, :]
-#             v_new = v[:, :, seq_len_before:, :]
-
-#             qk, sk = self.quant.quantize(k_new)
-#             qv, sv = self.quant.quantize(v_new)
-#             dk_new = self.quant.dequantize(qk, sk).to(k.dtype)
-#             dv_new = self.quant.dequantize(qv, sv).to(v.dtype)
-
-#             # 拼接
-#             # past_kv.key_values[i] = (
-#             #     torch.cat([k_hist, dk_new], dim=2),
-#             #     torch.cat([v_hist, dv_new], dim=2)
-#             # )
-#             past_kv.key_cache[i] = torch.cat([k_hist, dk_new], dim=2)
-#             past_kv.value_cache[i] = torch.cat([v_hist, dv_new], dim=2)
-            
-#             print(f"Layer {i} | Dequantized k shape: {past_kv.key_cache[i].shape}, Dequantized v shape: {past_kv.value_cache[i].shape}")
-#             # print(f"type(past_kv.key_cache[i]): {type(past_kv.key_cache[i])}")
-#             # print(f"type(past_kv.value_cache[i]): {type(past_kv.value_cache[i])}")
-#         return past_kv
 
 
 class LLaVAInferEngine:
@@ -716,127 +424,18 @@ class LLaVAInferEngine:
         self,
         model,
         processor,
-        # device="auto",
-        # dtype=torch.float16
     ):
-        # self.device = device
-        # self.dtype = dtype
-
-        # self.processor = AutoProcessor.from_pretrained(model_name)
-        # self.model = LlavaForConditionalGeneration.from_pretrained(
-        #     model_name, device_map='auto', torch_dtype=torch.float16
-        # ).eval()
-
         self.processor = processor
         self.model = model
 
         self.kv_quant = LLaVAKVOptimizedQuantizer(self.model)
 
     @torch.no_grad()
-    def generate(self, image, prompt, max_new_tokens=128, need_eval = False, temperature=0.1):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Please describe the animal in this image\n"},
-                    {"type": "image"},
-                ],
-            },
-        ]
+    def generate(self, raw_image, messages, max_new_tokens=128, need_eval = False, temperature=0.1):
         prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-        # TODO
-        raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
 
         inputs = self.processor(images=raw_image, text=prompt, return_tensors="pt").to(self.model.device)
-
         
-        input_ids = inputs.input_ids
-        attention_mask = inputs.attention_mask
-        images = inputs.pixel_values
-        print(f"input_ids shape: {input_ids.shape}")
-
-        past_key_values = DynamicCache()
-        generated = input_ids
-        eos_token_id = self.processor.tokenizer.eos_token_id
-        print(f"eos_token_id: {eos_token_id}")
-
-        # need_eval = False
-        for step in range(max_new_tokens):
-            # ==========================================
-            # 当前KV Cache已有长度
-            # ==========================================
-            # current_seq_len_before = generated.shape[1]
-            current_seq_len_before = past_key_values.seen_tokens
-            print(f">>>>> current_seq_len_before: {current_seq_len_before}")
-            
-            if step == 0:
-                # Prefill：全量量化
-                outputs = self.model(
-                    input_ids=generated,
-                    attention_mask=attention_mask,
-                    pixel_values=images,
-                    past_key_values=past_key_values,
-                    use_cache=True
-                )
-                # print(f"type(outputs.past_key_values): {type(outputs.past_key_values)}")
-                # print(f"outputs.past_key_values: {outputs.past_key_values}")
-                past_key_values = self.kv_quant.quantize_prefill(outputs.past_key_values)
-
-                # break
-            else:
-                # Decode：增量量化
-                outputs = self.model(
-                    input_ids=generated[:, -1:],
-                    attention_mask=attention_mask,
-                    pixel_values=None,
-                    past_key_values=past_key_values,
-                    use_cache=True
-                )
-                if need_eval:
-                    past_key_values = self.kv_quant.quantize_decode_with_native_kv_update(
-                        outputs.past_key_values,
-                        seq_len_before=current_seq_len_before
-                    )
-                else:
-                    past_key_values = self.kv_quant.quantize_decode_incremental(
-                        outputs.past_key_values,
-                        seq_len_before=current_seq_len_before
-                    )
-
-            # 采样下一个token
-            logits = outputs.logits[:, -1, :] / temperature
-
-            # 根据概率分布随机采样
-            # next_token = torch.multinomial(torch.softmax(logits, dim=-1), 1)
-            # 使用 argmax 贪婪采样
-            next_token = logits.argmax(dim=-1, keepdim=True)
-
-            print(f"next_token: {next_token}")
-
-            # 追加新token
-            generated = torch.cat([generated, next_token], dim=-1)
-            attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=-1)
-
-            print(f">>>>> Step {step} | Tokens len: {generated.shape[1]}")
-
-            if next_token.item() == eos_token_id or generated.shape[1] >= input_ids.shape[1] + max_new_tokens:
-                break
-        
-        # evaluate kv cache metric
-        if need_eval:
-            self.kv_quant.evaluate_metrics(past_key_values)
-        
-        eval_out_logits(generated[0], raw_image)
-
-        return self.processor.decode(generated[0], skip_special_tokens=True)
-
-
-    @torch.no_grad()
-    def generate_normal(self, raw_image, prompt_template, max_new_tokens=128, need_eval = False, temperature=0.1):
-        '''return generated ids'''
-        prompt = self.processor.apply_chat_template(prompt_template, add_generation_prompt=True)
-        inputs = self.processor(images=raw_image, text=prompt, return_tensors="pt").to(self.model.device)
-
         input_ids = inputs.input_ids
         attention_mask = inputs.attention_mask
         images = inputs.pixel_values
@@ -915,25 +514,11 @@ class LLaVAInferEngine:
         
         # eval_out_logits(generated[0], raw_image)
 
-        return generated
-    
+        return self.processor.decode(generated[0], skip_special_tokens=True)
+
 
     @torch.no_grad()
-    def generate_for_mme(self, inputs, max_new_tokens=128, need_eval=False, temperature=0.1):
-        # messages = [
-        #     {
-        #         "role": "user",
-        #         "content": [
-        #             {"type": "text", "text": "Please describe the animal in this image\n"},
-        #             {"type": "image"},
-        #         ],
-        #     },
-        # ]
-        # prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-        # raw_image = Image.open("/home/ccwan/stu_Jiangtp/MQuant/assert/sample1.jpg")
-        # inputs = self.processor(images=raw_image, text=prompt, return_tensors="pt").to(self.model.device)
-
-        
+    def generate_for_mme(self, inputs, max_new_tokens=128, need_eval=False, temperature=0.1):     
         input_ids = inputs.input_ids
         attention_mask = inputs.attention_mask
         images = inputs.pixel_values
@@ -1012,14 +597,3 @@ class LLaVAInferEngine:
 
         return generated
 
-
-
-# ===================== llava kv-cache turboquant =====================
-# if __name__ == "__main__":
-#     engine = LLaVAInferEngine()
-#     res = engine.generate(None, None, max_new_tokens=128)
-#     # res = engine.generate(None, None, max_new_tokens=128, need_eval=True)
-#     print(">>>>>>>>> result: ")
-#     print(res)
-
-#     # mme_test(engine)
