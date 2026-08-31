@@ -13,18 +13,21 @@ def quantize_linear_layer(
     block_size: int,
     rotation_strategy: str,
     quantize_weight: bool,
+    quantize_activation: bool = True,
     clip_ratio: float = 1.0,
     activation_scale_granularity: str = "per_vector_block",
     weight_scale_granularity: str = "per_vector_block",
 ) -> SureQuantLinear:
-    activation_quantizer = SureQuantizer(
-        dim=linear.in_features,
-        block_size=block_size,
-        num_bits=num_bits,
-        rotation_strategy=rotation_strategy,
-        scale_granularity=activation_scale_granularity,
-        clip_ratio=clip_ratio,
-    )
+    activation_quantizer = None
+    if quantize_activation:
+        activation_quantizer = SureQuantizer(
+            dim=linear.in_features,
+            block_size=block_size,
+            num_bits=num_bits,
+            rotation_strategy=rotation_strategy,
+            scale_granularity=activation_scale_granularity,
+            clip_ratio=clip_ratio,
+        )
     weight_quantizer = None
     if quantize_weight and linear.out_features % block_size == 0:
         weight_quantizer = SureQuantizer(
@@ -45,6 +48,7 @@ def _replace_linears(
     block_size: int,
     rotation_strategy: str,
     quantize_weight: bool,
+    quantize_activation: bool = True,
     clip_ratio: float = 1.0,
     activation_scale_granularity: str = "per_vector_block",
     weight_scale_granularity: str = "per_vector_block",
@@ -73,6 +77,7 @@ def _replace_linears(
                 block_size=block_size,
                 rotation_strategy=rotation_strategy,
                 quantize_weight=quantize_weight,
+                quantize_activation=quantize_activation,
                 clip_ratio=clip_ratio,
                 activation_scale_granularity=activation_scale_granularity,
                 weight_scale_granularity=weight_scale_granularity,
@@ -92,6 +97,7 @@ def quantize_llava_model(
     quantize_mm_proj: bool = True,
     quantize_language: bool = True,
     quantize_weight: bool = True,
+    quantize_activation: bool = True,
     clip_ratio: float = 1.0,
     activation_scale_granularity: str = "per_vector_block",
     weight_scale_granularity: str = "per_vector_block",
@@ -110,6 +116,7 @@ def quantize_llava_model(
             block_size=block_size,
             rotation_strategy=rotation_strategy,
             quantize_weight=quantize_weight,
+            quantize_activation=quantize_activation,
             clip_ratio=clip_ratio,
             activation_scale_granularity=activation_scale_granularity,
             weight_scale_granularity=weight_scale_granularity,

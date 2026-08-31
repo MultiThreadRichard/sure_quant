@@ -32,6 +32,7 @@ SEARCH_GRID_KEYS = (
     "calibration_steps",
     "calibration_lr",
     "clip_ratio",
+ #   "block_size",
     *LOSS_GRID_KEYS,
 )
 POSITIVE_GRID_KEYS = {"calibration_steps", "calibration_lr", "clip_ratio"}
@@ -120,11 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-vectors-per-layer", type=int, default=512)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--num-bits", type=int, default=4)
+    #parser.add_argument("--block-size", type=parse_int_grid, default=[32, 64, 128])
     parser.add_argument("--block-size", type=int, default=128)
     parser.add_argument(
         "--clip-ratio-grid",
         type=parse_float_grid,
-        default=[0.9, 1.0],
+        default=[0.9],
         help="Absmax clipping ratios searched for both activation and weight INT4.",
     )
     parser.add_argument("--rotation-strategy", choices=("rotation",), default="rotation")
@@ -133,20 +135,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-shard-size", default="5GB")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--torch-dtype", type=parse_dtype, default=torch.float16)
-    parser.add_argument("--device-map", default="cuda")
+    parser.add_argument("--device-map", default="cuda:1")
     parser.add_argument("--dk-sample-size", type=int, default=1024)
-    parser.add_argument("--calibration-steps", type=parse_int_grid, default=[20, 50, 100])
+    parser.add_argument("--calibration-steps", type=parse_int_grid, default=[200])
     parser.add_argument(
         "--calibration-lr",
         type=parse_float_grid,
-        default=[0.0001, 0.0005, 0.001, 0.005],
+        default=[0.001,0.005],
     )
-    parser.add_argument("--lambda-rec-grid", type=parse_float_grid, default=[1.0])
-    parser.add_argument("--lambda-dk-grid", type=parse_float_grid, default=[0.0, 0.01, 0.05])
-    parser.add_argument("--lambda-bal-grid", type=parse_float_grid, default=[0.0, 0.01])
-    parser.add_argument("--lambda-range-grid", type=parse_float_grid, default=[0.0, 0.01])
+    parser.add_argument("--lambda-rec-grid", type=parse_float_grid, default=[1.0, 2.0])
+    #parser.add_argument("--lambda-dk-grid", type=parse_float_grid, default=[0.1,0.5,0.8])
+    parser.add_argument("--lambda-dk-grid", type=parse_float_grid, default=[0.8, 1.2, 1.5])
+    parser.add_argument("--lambda-bal-grid", type=parse_float_grid, default=[0.0, 0.1])
+    parser.add_argument("--lambda-range-grid", type=parse_float_grid, default=[0.01])
     parser.add_argument("--quantize-vision", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--quantize-mm-proj", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--quantize-language", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--quantize-weight", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--quantize-activation", action=argparse.BooleanOptionalAction, default=True)
     return parser

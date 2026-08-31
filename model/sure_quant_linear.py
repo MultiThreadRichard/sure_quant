@@ -15,13 +15,14 @@ class SureQuantLinear(nn.Module):
 
     Args:
         linear: Original ``nn.Linear`` layer.
-        activation_quantizer: A ``SureQuantizer`` instance for activations.
+        activation_quantizer: Optional ``SureQuantizer`` for activations.
+            When ``None``, activations pass through unchanged (weight-only mode).
         weight_quantizer: Optional ``SureQuantizer`` instance for weights.
     """
 
-    def __init__(self, linear: nn.Linear, activation_quantizer: SureQuantizer, weight_quantizer: SureQuantizer = None):
+    def __init__(self, linear: nn.Linear, activation_quantizer: SureQuantizer | None, weight_quantizer: SureQuantizer = None):
         super().__init__()
-        if linear.in_features != activation_quantizer.dim:
+        if activation_quantizer is not None and linear.in_features != activation_quantizer.dim:
             raise ValueError(
                 f"Linear in_features={linear.in_features} must match "
                 f"activation SureQuantizer dim={activation_quantizer.dim}"
@@ -58,12 +59,17 @@ class SureQuantLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply rotation quantization to input, then the linear layer.
 
+        When ``activation_quantizer`` is ``None`` (weight-only mode), the
+        input is passed to the linear layer unchanged.
+
         Args:
             x: Input tensor of shape ``[..., D]``.
 
         Returns:
             Output tensor of shape ``[..., out_features]``.
         """
+        if self.activation_quantizer is None:
+            return self.linear(x)
         input_dtype = x.dtype
         original_shape = x.shape
         x2d = x.reshape(-1, x.shape[-1])

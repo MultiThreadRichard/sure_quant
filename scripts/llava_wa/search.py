@@ -12,7 +12,11 @@ from typing import Any
 import torch
 
 from config.default_config import SureQuantConfig
-from scripts.llava_wa.calibration import calibrate_all_quantizers, reconstruction_score
+from scripts.llava_wa.calibration import (
+    calibrate_all_quantizers,
+    reconstruction_score,
+    weight_reconstruction_score,
+)
 from scripts.llava_wa.config import CHECKPOINT, LOSS_GRID_KEYS, SEARCH_GRID_KEYS, loss_grid
 from scripts.llava_wa.data import (
     generate_assistant_outputs,
@@ -38,7 +42,7 @@ BEST_TRIAL_FALLBACK: dict[str, dict[str, Any]] = {
         "num_pairs_per_layer": 8,
         "order": "hadamard_givens",
         "lambda_rec": 1.0,
-        "lambda_dk": 0.05,
+        "lambda_dk": 0.5,
         "lambda_bal": 0.0,
         "lambda_range": 0.01,
         "lambda_orth": 0.0,
@@ -46,6 +50,7 @@ BEST_TRIAL_FALLBACK: dict[str, dict[str, Any]] = {
         "calibration_lr": 0.005,
         "calibration_batch_size": 128,
         "dk_sample_size": 1024,
+        "stiefel_num_reflectors": 8,
         "scale_mode": "clipped_absmax",
         "target_types": ["weight", "activation"],
         "device": "cuda",
@@ -103,6 +108,7 @@ def build_cfg_and_scope_from_best_trial(
             "quantize_mm_proj",
             "quantize_language",
             "quantize_weight",
+            "quantize_activation",
         )
     }
     scope.update(
@@ -166,6 +172,7 @@ def _trial_configs(args: argparse.Namespace) -> list[SureQuantConfig]:
             "lambda_dk": args.lambda_dk_grid,
             "lambda_bal": args.lambda_bal_grid,
             "lambda_range": args.lambda_range_grid,
+            #"block_size": args.block_size,
         },
     )
 
@@ -230,14 +237,18 @@ def run_grid_search(args: argparse.Namespace) -> dict[str, Any]:
             quantize_mm_proj=args.quantize_mm_proj,
             quantize_language=args.quantize_language,
             quantize_weight=args.quantize_weight,
+            quantize_activation=args.quantize_activation,
             clip_ratio=cfg.clip_ratio,
             activation_scale_granularity=cfg.activation_scale_granularity,
             weight_scale_granularity=cfg.weight_scale_granularity,
         )
         calibration_logs = calibrate_all_quantizers(model, train_data, cfg)
-        score, layer_scores = reconstruction_score(
-            model, validation_data, batch_size=args.evaluation_batch_size
-        )
+        if args.quantize_activation:
+            score, layer_scores = reconstruction_score(
+                model, validation_data, batch_size=args.evaluation_batch_size
+            )
+        else:
+            score, layer_scores = weight_reconstruction_score(model)
         result = {
             "trial": trial_index,
             "search_parameters": {key: getattr(cfg, key) for key in SEARCH_GRID_KEYS},
@@ -271,6 +282,7 @@ def run_grid_search(args: argparse.Namespace) -> dict[str, Any]:
                     "quantize_mm_proj": args.quantize_mm_proj,
                     "quantize_language": args.quantize_language,
                     "quantize_weight": args.quantize_weight,
+                    "quantize_activation": args.quantize_activation,
                 },
             }
             print(f"New best trial; saving quantized model to {best_model_dir}")
@@ -318,9 +330,7 @@ def run_grid_search(args: argparse.Namespace) -> dict[str, Any]:
 
 def run_best_trial_calibration(args: argparse.Namespace) -> dict[str, Any]:
     """Recalibrate once with persisted best-trial parameters and save the model."""
-    print(f"Loading best trial config from {args.best_trial_config}")
     payload = load_best_trial_config(args.best_trial_config)
-    print(f"Loaded best trial config: {payload}")
     cfg, quantization_scope, rotation_strategy = build_cfg_and_scope_from_best_trial(
         payload
     )
@@ -369,9 +379,12 @@ def run_best_trial_calibration(args: argparse.Namespace) -> dict[str, Any]:
         **quantization_scope,
     )
     calibration_logs = calibrate_all_quantizers(model, train_data, cfg)
-    score, layer_scores = reconstruction_score(
-        model, validation_data, batch_size=args.evaluation_batch_size
-    )
+    if quantization_scope.get("quantize_activation", True):
+        score, layer_scores = reconstruction_score(
+            model, validation_data, batch_size=args.evaluation_batch_size
+        )
+    else:
+        score, layer_scores = weight_reconstruction_score(model)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -395,6 +408,7 @@ def run_best_trial_calibration(args: argparse.Namespace) -> dict[str, Any]:
                     "quantize_mm_proj",
                     "quantize_language",
                     "quantize_weight",
+                    "quantize_activation",
                 )
             },
         },
