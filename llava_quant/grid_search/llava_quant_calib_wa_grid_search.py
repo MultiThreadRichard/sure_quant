@@ -6,12 +6,13 @@ import sys
 import time
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+print(f"REPO_ROOT: {REPO_ROOT}")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.llava_wa.config import build_parser  # noqa: E402
-from scripts.llava_wa.search import run_grid_search  # noqa: E402
+from llava_quant.llava_wa.config import build_parser  # noqa: E402
+from llava_quant.llava_wa.search import run_grid_search  # noqa: E402
 
 
 def grid_search() -> None:

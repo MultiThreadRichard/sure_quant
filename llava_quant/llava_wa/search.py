@@ -12,19 +12,19 @@ from typing import Any
 import torch
 
 from config.default_config import SureQuantConfig
-from scripts.llava_wa.calibration import (
+from .calibration import (
     calibrate_all_quantizers,
     reconstruction_score,
     weight_reconstruction_score,
 )
-from scripts.llava_wa.config import CHECKPOINT, LOSS_GRID_KEYS, SEARCH_GRID_KEYS, loss_grid
-from scripts.llava_wa.data import (
+from .config import CHECKPOINT, LOSS_GRID_KEYS, SEARCH_GRID_KEYS, loss_grid
+from .data import (
     generate_assistant_outputs,
     load_calib_data,
     split_calibration_data,
 )
-from scripts.llava_wa.modeling import quantize_llava_model
-from scripts.llava_wa.persistence import _jsonable_config, save_quantized_model
+from .modeling import quantize_llava_model
+from .persistence import _jsonable_config, save_quantized_model
 
 
 # Built-in copy of the current best grid-search parameters. This keeps best-mode

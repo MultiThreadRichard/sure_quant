@@ -10,7 +10,8 @@ import sys
 import os
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+print(f"REPO_ROOT: {REPO_ROOT}")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -26,35 +27,31 @@ from transformers import AutoProcessor, LlavaForConditionalGeneration
 from PIL import Image
 from datasets import load_dataset
 
-from scripts.llava_wa.config import (
+from config.default_config import SureQuantConfig
+
+from llava_quant.llava_wa.config import (
     PATH_PREFIX,
     DEFAULT_INFERENCE_PROMPT,
     build_parser,
     DEFAULT_PROMPT
 )
-from scripts.llava_wa.modeling import (
-    quantize_linear_layer,
-    quantize_llava_model,
+from llava_quant.llava_wa.modeling import (
     selected_linear_names,
 )
-from scripts.llava_wa.calibration import (
+from llava_quant.llava_wa.calibration import (
     calibrate_all_quantizers,
     reconstruction_score,
 )
-from scripts.llava_wa.data import (
+from llava_quant.llava_wa.data import (
     collect_calibration_data,
     split_calibration_data,
     make_prompt,
     generate_assistant_outputs,
 )
-from scripts.llava_wa.persistence import save_quantized_model, load_quantized_model, _jsonable_config
-from scripts.llava_wa.search import seed_everything
+from llava_quant.llava_wa.persistence import save_quantized_model, load_quantized_model, _jsonable_config
+from llava_quant.llava_wa.search import seed_everything
 
-from config.default_config import SureQuantConfig
-from model.sure_quantizer import SureQuantizer
-from model.sure_quant_linear import SureQuantLinear
-
-from scripts.llava_wa.modeling_fp4 import (
+from llava_quant.llava_wa.modeling_fp4 import (
     quantize_llava_model_fp4, 
     save_quantized_model_fp4,
     load_quantized_model_fp4,
@@ -411,7 +408,6 @@ def main() -> None:
 
     run_saved_model_fp4()
 
-    # run_saved_model_int4()
 
 
 

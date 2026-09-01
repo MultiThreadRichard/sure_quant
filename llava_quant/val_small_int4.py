@@ -20,29 +20,29 @@ from datasets import load_dataset
 from tqdm import tqdm
 from qwen_vl_utils import process_vision_info
 
-from scripts.llava_wa.config import (
+from llava_quant.llava_wa.config import (
     PATH_PREFIX,
     DEFAULT_INFERENCE_PROMPT,
     build_parser,
 )
-from scripts.llava_wa.modeling import (
+from llava_quant.llava_wa.modeling import (
     quantize_linear_layer,
     quantize_llava_model,
     selected_linear_names,
 )
-from scripts.llava_wa.calibration import (
+from llava_quant.llava_wa.calibration import (
     compute_kl_for_quantization,
     compute_cos_similarity,
     compute_pearson_correlation,
 )
-from scripts.llava_wa.data import (
+from llava_quant.llava_wa.data import (
     collect_calibration_data,
     split_calibration_data,
     make_prompt,
     generate_assistant_outputs,
 )
-from scripts.llava_wa.persistence import save_quantized_model, load_quantized_model, _jsonable_config
-from scripts.llava_wa.search import seed_everything
+from llava_quant.llava_wa.persistence import save_quantized_model, load_quantized_model, _jsonable_config
+from llava_quant.llava_wa.search import seed_everything
 
 
 """

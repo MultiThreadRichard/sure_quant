@@ -16,12 +16,15 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+print(f"PROJECT_ROOT: {_PROJECT_ROOT}")
 sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_PROJECT_ROOT / "scripts"))
+sys.path.insert(0, str(_PROJECT_ROOT / "llava_quant"))
 sys.path.insert(0, str(_PROJECT_ROOT / "mme"))
 
-DEFAULT_MODEL_DIR = _PROJECT_ROOT / "runs" / "w4a16_language_only" / "best_quantized_model"
+# DEFAULT_MODEL_DIR = _PROJECT_ROOT / "runs" / "w4a16_language_only" / "best_quantized_model"
+DEFAULT_MODEL_DIR = Path("/home/ecnu01/sure_quant_models/w4a16_language_only/20260823/best_quantized_model")
+
 
 
 def parse_args() -> argparse.Namespace:

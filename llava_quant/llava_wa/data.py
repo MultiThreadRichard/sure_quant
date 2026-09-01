@@ -8,8 +8,8 @@ from typing import Any
 import torch
 from torch import nn
 
-from scripts.llava_wa.config import CALIBRATION_DATA_PATHS, CHECKPOINT
-from scripts.llava_wa.modeling import selected_linear_names
+from .config import CALIBRATION_DATA_PATHS, CHECKPOINT
+from .modeling import selected_linear_names
 
 
 def make_prompt(processor: Any, text: str) -> str:

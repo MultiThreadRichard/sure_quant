@@ -11,7 +11,7 @@ from torch import nn
 from config.default_config import SureQuantConfig
 from model.sure_quant_linear import SureQuantLinear
 from ops.block_ops import blockify, deblockify
-from scripts.llava_wa.modeling import quantize_llava_model
+from .modeling import quantize_llava_model
 
 
 INT4_WEIGHTS_NAME = "surequant_int4_weights.pt"
@@ -208,6 +208,11 @@ def load_quantized_model(
     metadata = json.loads((output_dir / "surequant_config.json").read_text(encoding="utf-8"))
     quant_cfg = metadata["surequant"]
     model_cfg = metadata["model_quantization"]
+
+    ##########################
+    # TODO tmp override ecnu01
+    metadata["base_checkpoint"] = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
+    ##########################
     model = LlavaForConditionalGeneration.from_pretrained(
         metadata["base_checkpoint"], device_map=device_map, torch_dtype=torch_dtype
     )
