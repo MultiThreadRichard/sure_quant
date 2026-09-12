@@ -175,13 +175,13 @@ class LLaVAKVOptimizedQuantizer:
 
     
     def extract_kv(self, past_kv: DynamicCache):
-        print(f"len(past_kv): {len(past_kv)}")
+        # print(f"len(past_kv): {len(past_kv)}")
         # 批量转换 key_cache value_cache 到 numpy array
         # shape: [num_layers, num_heads, seq_len, head_dim]
         k_cache = np.stack([k.squeeze(0).detach().cpu().numpy() for k in past_kv.key_cache])
         v_cache = np.stack([v.squeeze(0).detach().cpu().numpy() for v in past_kv.value_cache])
-        print(f"k_cache.shape: {k_cache.shape}")
-        print(f"v_cache.shape: {v_cache.shape}")
+        # print(f"k_cache.shape: {k_cache.shape}")
+        # print(f"v_cache.shape: {v_cache.shape}")
 
         return {"k_cache": k_cache, "v_cache": v_cache}
     
@@ -218,9 +218,9 @@ class LLaVAKVOptimizedQuantizer:
             past_kv.key_cache[i] = k_tensor
             past_kv.value_cache[i] = v_tensor
         
-        print(f"成功赋值 {num_layers} 层的 KV 缓存")
-        print(f"第0层 k 形状: {past_kv.key_cache[0].shape}")
-        print(f"第0层 v 形状: {past_kv.value_cache[0].shape}")
+        # print(f"成功赋值 {num_layers} 层的 KV 缓存")
+        # print(f"第0层 k 形状: {past_kv.key_cache[0].shape}")
+        # print(f"第0层 v 形状: {past_kv.value_cache[0].shape}")
         
         return past_kv
 
