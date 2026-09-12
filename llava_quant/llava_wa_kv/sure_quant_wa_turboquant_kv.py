@@ -23,7 +23,9 @@ sys.path.insert(0, str(_PROJECT_ROOT / "llava_quant"))
 sys.path.insert(0, str(_PROJECT_ROOT / "mme"))
 
 # DEFAULT_MODEL_DIR = _PROJECT_ROOT / "runs" / "w4a16_language_only" / "best_quantized_model"
-DEFAULT_MODEL_DIR = Path("/home/ecnu01/sure_quant_models/w4a16_language_only/20260823/best_quantized_model")
+# DEFAULT_MODEL_DIR = Path("/home/ecnu01/sure_quant_models/w4a16_language_only/20260823/best_quantized_model")
+DEFAULT_MODEL_DIR = Path("/home/ecnu01/workspace/sure_quant/model_saved/llava_7b_surequant_w4a16/best_quantized_model")
+
 
 
 

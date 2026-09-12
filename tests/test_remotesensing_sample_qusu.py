@@ -1,7 +1,6 @@
 import sys
 import os
 from pathlib import Path
-import torch.nn.functional as F
 import getpass
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,11 +15,13 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoProcessor, LlavaForConditionalGeneration
 from PIL import Image
 from datasets import load_dataset
 from tqdm import tqdm
 
+from mme.llava_kv_quant_turbo import LLaVAInferEngine
 
 
 
@@ -42,7 +43,8 @@ CHECKPOINT = f"{PATH_PREFIX}/workspace/models/llava-1.5-7b-hf"
 
 #QMODEL_PATH = "/home/ccwan/stu_Jiangtp/spinquant-test/lab_models/llava-1.5-7b-spinquant-learned-w4a16"
 # BEST_MODEL_DIR = "/home/ecnu01/sure_quant_models/20260808/best_quantized_model"
-BEST_MODEL_DIR = "/home/ecnu01/sure_quant_models/w4a16_language_only/20260823/best_quantized_model"
+# BEST_MODEL_DIR = "/home/ecnu01/sure_quant_models/w4a16_language_only/20260823/best_quantized_model"
+BEST_MODEL_DIR = "/home/ecnu01/workspace/sure_quant/model_saved/llava_7b_surequant_w4a16/best_quantized_model"
 
 
 #VAL_DIR = Path("/home/ccwan/stu_Jiangtp/spinquant-test/sample_img/remotesensing_sample")
@@ -169,7 +171,7 @@ def loaded_best_model():
     # if not torch.cuda.is_available():
     #     pytest.skip("CUDA device is required to load this saved checkpoint")
 
-    from scripts.llava_quant_calib_wa import load_quantized_model
+    from llava_quant.llava_wa.persistence import load_quantized_model
 
     model = load_quantized_model(
         BEST_MODEL_DIR, device_map="cuda", torch_dtype=torch.float16
@@ -180,6 +182,50 @@ def loaded_best_model():
     processor = AutoProcessor.from_pretrained(BEST_MODEL_DIR)
     model.eval()
     return model, processor
+
+
+def infer_with_engine(
+    engine: LLaVAInferEngine,
+    processor: Any,
+    img_path: str,
+    prompt_text: str = "Please describe this image\n",
+    max_new_tokens: int = 128,
+    do_sample: bool = False,
+) -> tuple[torch.Tensor, str]:
+    """KV-cache-quantized inference via LLaVAInferEngine (TurboQuant KV4)."""
+    prompt = make_prompt(processor, prompt_text)
+    raw_image = Image.open(img_path)
+    device = next(engine.model.parameters()).device
+
+    inputs = processor(
+        images=raw_image, text=prompt, return_tensors="pt",
+    ).to(device)
+
+    generated_ids = engine.generate_for_mme(inputs, max_new_tokens=max_new_tokens, do_sample=do_sample)
+    decoded = processor.decode(generated_ids[0], skip_special_tokens=True)
+    return generated_ids[0], decoded
+
+
+def run_saved_model_kv(do_sample: bool = False) -> list[dict[str, Any]]:
+    """Load a saved W4A16 quantized model and run KV-quantized inference."""
+    save_path = BEST_MODEL_DIR
+    print(f"\n========== Loading saved quantized model from {save_path} ==========")
+
+    loaded_model, processor = loaded_best_model()
+
+    engine = LLaVAInferEngine(loaded_model, processor)
+
+    image_paths: list[Path] = sorted(
+        p for p in VAL_DIR.rglob("*")
+        if p.is_file() and p.suffix.lower() in SAMPLE_IMAGE_SUFFIXES
+    )
+
+    out_list = []
+    for img_path in image_paths:
+        output_ids, out_txt = infer_with_engine(engine, processor, img_path, do_sample=do_sample)
+        out_list.append({'img_path': img_path, 'output_ids': output_ids, 'out_txt': out_txt})
+    return out_list
+
 
 def run_saved_model_int4() -> None:
     """Load a saved quantized model and run inference."""
@@ -233,7 +279,12 @@ def compare_with_full_model(out_list):
 # CLI entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    out_list = run_saved_model_int4()
+    # sure_w4a16
+    # out_list = run_saved_model_int4()
+    # compare_with_full_model(out_list)
+
+    # sure_w4a16kv4
+    out_list = run_saved_model_kv()
     compare_with_full_model(out_list)
 
 

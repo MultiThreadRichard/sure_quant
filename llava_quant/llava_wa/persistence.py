@@ -211,7 +211,7 @@ def load_quantized_model(
 
     ##########################
     # TODO tmp override ecnu01
-    metadata["base_checkpoint"] = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
+    # metadata["base_checkpoint"] = "/home/ecnu01/workspace/models/llava-1.5-7b-hf"
     ##########################
     model = LlavaForConditionalGeneration.from_pretrained(
         metadata["base_checkpoint"], device_map=device_map, torch_dtype=torch_dtype

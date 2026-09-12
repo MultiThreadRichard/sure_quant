@@ -17,6 +17,7 @@ from llava_quant.llava_wa.search import run_grid_search  # noqa: E402
 
 def grid_search() -> None:
     args = build_parser().parse_args()
+    # print(f"args: {args}")
     start = time.time()
     summary = run_grid_search(args)
     print(

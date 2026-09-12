@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+print(f"REPO_ROOT: {REPO_ROOT}")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -20,35 +21,26 @@ from datasets import load_dataset
 from tqdm import tqdm
 from qwen_vl_utils import process_vision_info
 
-from scripts.llava_wa.config import (
+from llava_quant.llava_wa.config import (
     PATH_PREFIX,
     DEFAULT_INFERENCE_PROMPT,
-    build_parser,
 )
-from scripts.llava_wa.modeling import (
-    quantize_linear_layer,
-    quantize_llava_model,
-    selected_linear_names,
-)
-from scripts.llava_wa.calibration import (
+from llava_quant.llava_wa.utils import (
     compute_kl_for_quantization,
     compute_cos_similarity,
     compute_pearson_correlation,
 )
-from scripts.llava_wa.data import (
-    collect_calibration_data,
-    split_calibration_data,
+from llava_quant.llava_wa.data import (
     make_prompt,
-    generate_assistant_outputs,
 )
-from scripts.llava_wa.persistence import save_quantized_model, load_quantized_model, _jsonable_config
-from scripts.llava_wa.search import seed_everything
+from llava_quant.llava_wa.persistence import save_quantized_model, load_quantized_model, _jsonable_config
+from llava_quant.llava_wa.search import seed_everything
 
 
 """
 加载后int4模型, mme评估
 
-CUDA_VISIBLE_DEVICES=1 nohup python tests/test_load_int4.py > tests/llava_load_int4_lang02.log 2>&1 &
+CUDA_VISIBLE_DEVICES=0 nohup python tests/test_mme_int4.py > logs/mme_all_w4a16.log 2>&1 &
 """
 
 
@@ -56,10 +48,7 @@ CUDA_VISIBLE_DEVICES=1 nohup python tests/test_load_int4.py > tests/llava_load_i
 # Path constants
 # ---------------------------------------------------------------------------
 CHECKPOINT = f"{PATH_PREFIX}/workspace/models/llava-1.5-7b-hf"
-# SAMPLE_IMG_DIR = f"{PATH_PREFIX}/workspace/awq_learn/sample_img"
 CALIB_DATA_PATH = f"{PATH_PREFIX}/workspace/data/flickr30k/data/test-00000-of-00009.parquet"
-# SAVE_ID = "02"
-# DEFAULT_SAVE_DIR = f"{PATH_PREFIX}/workspace/sure_quant/model_saved/llava_7b_sure_fp4_{SAVE_ID}"
 
 MME_DATA_PATH_LIST = [
     f'{PATH_PREFIX}/workspace/data/MME/data/test-00000-of-00004-a25dbe3b44c4fda6.parquet',
@@ -85,8 +74,9 @@ SAMPLE_PATH_LIST = [
 # int4
 # QMODEL_PATH = "/home/ecnu01/sure_quant_models/20260808/best_quantized_model"
 # QMODEL_PATH = "/home/ecnu01/sure_quant_models/w4a16_language_only/best_quantized_model"
-QMODEL_PATH = "/home/ecnu01/sure_quant_models/w4a16_language_only/20260824/best_quantized_model"
-
+# QMODEL_PATH = "/home/ecnu01/sure_quant_models/w4a16_language_only/20260824/best_quantized_model"
+QMODEL_PATH = "/home/ecnu01/workspace/sure_quant/model_saved/llava_7b_surequant_w4a16/best_quantized_model"
+# QMODEL_PATH = "/home/ecnu01/workspace/sure_quant/model_saved/llava_7b_surequant_llm_w4a16/best_quantized_model"
 
 
 
@@ -112,7 +102,7 @@ def infer(
     # print(f"inputs['input_ids'].shape: {inputs['input_ids'].shape}")
 
     with torch.no_grad():
-        output = model.generate(**inputs, max_new_tokens=max_new_tokens)
+        output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
     decoded = processor.decode(output[0], skip_special_tokens=True)
     # print(f"Generated: {decoded}")
     # print("==========================================")
@@ -285,13 +275,21 @@ def run_mme_int4():
 
     mme_test(loaded_model, processor)
 
+    # infer(loaded_model, processor, img_path=SAMPLE_PATH_LIST[2])
+
 
 
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 def main() -> None:
-    run_mme_int4()
+    # seed_everything(42)
+    # seed_everything(33)
+
+    # run_mme_int4()
+
+    out_list = run_saved_model_int4()
+    compare_with_full_model(out_list)
 
 
 

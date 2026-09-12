@@ -21,7 +21,6 @@ if str(REPO_ROOT) not in sys.path:
 from turboquant import TurboQuant, TurboQuantMSE, KVCacheCompressor
 from turboquant.outlier import OutlierTurboQuant
 
-from eval_out_logits import compute_cos_similarity, compute_pearson_correlation, compute_kl_for_quantization
 
 
 def turbo_compress_kv(kv: dict):
@@ -153,6 +152,7 @@ def llava_full_infer(raw_image):
 
 
 def eval_out_logits(new_output, raw_image):
+    from eval_out_logits import compute_cos_similarity, compute_pearson_correlation, compute_kl_for_quantization
     original_output = llava_full_infer(raw_image)
 
     print(f"original_output.shape: {original_output.shape}")
@@ -386,16 +386,16 @@ class LLaVAKVOptimizedQuantizer:
         v_tensor = torch.from_numpy(v_cache)
         v_hat_tensor = torch.from_numpy(v_hat)
         
-        k_pearson = compute_pearson_correlation(k_tensor, k_hat_tensor)
-        v_pearson = compute_pearson_correlation(v_tensor, v_hat_tensor)
+        # k_pearson = compute_pearson_correlation(k_tensor, k_hat_tensor)
+        # v_pearson = compute_pearson_correlation(v_tensor, v_hat_tensor)
  
-        # 计算 KL 散度
-        k_kl = compute_kl_for_quantization(k_tensor, k_hat_tensor)
-        v_kl = compute_kl_for_quantization(v_tensor, v_hat_tensor)
+        # # 计算 KL 散度
+        # k_kl = compute_kl_for_quantization(k_tensor, k_hat_tensor)
+        # v_kl = compute_kl_for_quantization(v_tensor, v_hat_tensor)
  
-        print(f"\n  {'K MSE':>12} {'V MSE':>12} {'K Cosine':>10} {'V Cosine':>10} {'K Pearson':>8} {'V Pearson':>8} {'K KL':>8} {'V KL':>8} {'Ratio':>8}")
+        print(f"\n  {'K MSE':>12} {'V MSE':>12} {'K Cosine':>10} {'V Cosine':>10} {'Ratio':>8}")
         print(f"  {'─' * 100}")
-        print(f"  {k_mse:>12.8f} {v_mse:>12.8f} {np.mean(cosines):>10.6f} {np.mean(v_cosines):>10.6f} {k_pearson:>8.6f} {v_pearson:>8.6f} {k_kl:>8.6f} {v_kl:>8.6f} {self.ratio:>7.1f}×")
+        print(f"  {k_mse:>12.8f} {v_mse:>12.8f} {np.mean(cosines):>10.6f} {np.mean(v_cosines):>10.6f} {self.ratio:>7.1f}×")
 
 
 
@@ -431,7 +431,7 @@ class LLaVAInferEngine:
         self.kv_quant = LLaVAKVOptimizedQuantizer(self.model)
 
     @torch.no_grad()
-    def generate(self, raw_image, messages, max_new_tokens=128, need_eval = False, temperature=0.1):
+    def generate(self, raw_image, messages, max_new_tokens=128, need_eval = False, temperature=0.1, do_sample=False):
         prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
 
         inputs = self.processor(images=raw_image, text=prompt, return_tensors="pt").to(self.model.device)
@@ -492,10 +492,12 @@ class LLaVAInferEngine:
             # 采样下一个token
             logits = outputs.logits[:, -1, :] / temperature
 
-            # 根据概率分布随机采样
-            # next_token = torch.multinomial(torch.softmax(logits, dim=-1), 1)
-            # 使用 argmax 贪婪采样
-            next_token = logits.argmax(dim=-1, keepdim=True)
+            if do_sample:
+                # 根据概率分布随机采样 (等价于 transformers generate(do_sample=True))
+                next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1)
+            else:
+                # 使用 argmax 贪婪采样
+                next_token = logits.argmax(dim=-1, keepdim=True)
 
             print(f"next_token: {next_token}")
 
@@ -518,7 +520,7 @@ class LLaVAInferEngine:
 
 
     @torch.no_grad()
-    def generate_for_mme(self, inputs, max_new_tokens=128, need_eval=False, temperature=0.1):     
+    def generate_for_mme(self, inputs, max_new_tokens=128, need_eval=False, temperature=0.1, do_sample=False):     
         input_ids = inputs.input_ids
         attention_mask = inputs.attention_mask
         images = inputs.pixel_values
@@ -575,10 +577,12 @@ class LLaVAInferEngine:
             # 采样下一个token
             logits = outputs.logits[:, -1, :] / temperature
 
-            # 根据概率分布随机采样
-            # next_token = torch.multinomial(torch.softmax(logits, dim=-1), 1)
-            # 使用 argmax 贪婪采样
-            next_token = logits.argmax(dim=-1, keepdim=True)
+            if do_sample:
+                # 根据概率分布随机采样 (等价于 transformers generate(do_sample=True))
+                next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1)
+            else:
+                # 使用 argmax 贪婪采样
+                next_token = logits.argmax(dim=-1, keepdim=True)
 
             # print(f"next_token: {next_token}")
 

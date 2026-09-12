@@ -9,6 +9,8 @@ import re
 # TO MOD
 # output_path = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res/metrics'
 output_path = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res/metrics'
+# output_path = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_sure_llm_w4a16_turbo_kv4/metrics'
+
 
 os.makedirs(output_path, exist_ok=True)
 
@@ -16,6 +18,8 @@ out_file_name = 'metric_llava_test.txt'
 
 # src_partition_dir = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res'
 src_partition_dir = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res'
+# src_partition_dir = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_sure_llm_w4a16_turbo_kv4'
+
 
 os.makedirs(src_partition_dir, exist_ok=True)
 
