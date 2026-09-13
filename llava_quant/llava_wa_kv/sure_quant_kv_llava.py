@@ -11,6 +11,8 @@ LLaVA-specific glue:
   ``llava_quant_calib_wa_grid_search.py`` later without touching the core).
 * :class:`LLaVAKVSureQuantizer` — operate on a transformers ``Cache``
   (prefill / incremental decode / MSE evaluation).
+* :class:`LLaVAKVSureQuantInferEngine` — greedy decoding with the KV cache
+  quantized every step; the SureQuant counterpart of ``LLaVAInferEngine``.
 * :func:`calibrate_kv_layer` — train the per-layer Givens rotations on collected
   KV vectors, reusing the exact ``train.calibrate_rotations`` trainer.
 
@@ -246,6 +248,133 @@ class LLaVAKVSureQuantizer(nn.Module):
             "mean_v_mse": v_mse,
             "layer_scores": layer_scores,
         }
+
+
+class LLaVAKVSureQuantInferEngine:
+    """Greedy decoding with the KV cache quantized by SureQuant every step.
+
+    The role-equivalent of ``mme.llava_kv_quant_turbo.LLaVAInferEngine``
+    (TurboQuant): it drives a manual prefill/decode loop instead of
+    ``model.generate`` because the cache must be quantized between steps.  The
+    model's weights and activations are left untouched — only the KV cache is
+    quantized.
+
+    Args:
+        model: The LLaVA model (full-precision or otherwise) to run inference on.
+        processor: The matching ``AutoProcessor``.
+        **kv_kwargs: Forwarded to :class:`LLaVAKVSureQuantizer`
+            (``num_bits``, ``block_size``, ``rotation_strategy``, ...).
+    """
+
+    def __init__(self, model: nn.Module, processor: Any, **kv_kwargs: Any):
+        self.model = model
+        self.processor = processor
+        device = next(model.parameters()).device
+        self.kv_quant = LLaVAKVSureQuantizer(model, **kv_kwargs).to(device)
+
+    @torch.no_grad()
+    def generate_for_mme(
+        self,
+        inputs: Any,
+        max_new_tokens: int = 128,
+        need_eval: bool = False,
+        temperature: float = 0.1,
+        do_sample: bool = False,
+    ) -> torch.Tensor:
+        """Generate from preprocessed ``inputs``, returning the generated ids."""
+        return self._generate(
+            inputs, max_new_tokens=max_new_tokens, need_eval=need_eval,
+            temperature=temperature, do_sample=do_sample,
+        )
+
+    @torch.no_grad()
+    def generate(
+        self,
+        raw_image: Any,
+        messages: list[dict[str, Any]],
+        max_new_tokens: int = 128,
+        need_eval: bool = False,
+        temperature: float = 0.1,
+        do_sample: bool = False,
+    ) -> str:
+        """Generate for a chat ``messages`` list plus ``raw_image``, returning text."""
+        prompt = self.processor.apply_chat_template(messages, add_generation_prompt=True)
+        inputs = self.processor(
+            images=raw_image, text=prompt, return_tensors="pt",
+        ).to(self.model.device)
+        generated = self._generate(
+            inputs, max_new_tokens=max_new_tokens, need_eval=need_eval,
+            temperature=temperature, do_sample=do_sample,
+        )
+        return self.processor.decode(generated[0], skip_special_tokens=True)
+
+    def _generate(
+        self,
+        inputs: Any,
+        *,
+        max_new_tokens: int,
+        need_eval: bool,
+        temperature: float,
+        do_sample: bool,
+    ) -> torch.Tensor:
+        """Shared prefill/decode loop; quantizes the KV cache after every step."""
+        from transformers import DynamicCache
+
+        input_ids = inputs["input_ids"]
+        attention_mask = inputs["attention_mask"]
+        pixel_values = inputs.get("pixel_values")
+
+        past_key_values = DynamicCache()
+        generated = input_ids
+        eos_token_id = self.processor.tokenizer.eos_token_id
+
+        for step in range(max_new_tokens):
+            if step == 0:
+                # Prefill: process the whole prompt, then quantize the full cache.
+                outputs = self.model(
+                    input_ids=generated,
+                    attention_mask=attention_mask,
+                    pixel_values=pixel_values,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+                past_key_values = self.kv_quant.quantize_prefill(outputs.past_key_values)
+            else:
+                # Decode: only the latest token is new; quantize just that increment.
+                seq_len_before = generated.shape[1] - 1
+                outputs = self.model(
+                    input_ids=generated[:, -1:],
+                    attention_mask=attention_mask,
+                    pixel_values=None,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+                past_key_values = self.kv_quant.quantize_decode_with_native_update(
+                    outputs.past_key_values, seq_len_before=seq_len_before,
+                )
+
+            logits = outputs.logits[:, -1, :] / temperature
+            if do_sample:
+                next_token = torch.multinomial(
+                    torch.softmax(logits, dim=-1), num_samples=1
+                )
+            else:
+                next_token = logits.argmax(dim=-1, keepdim=True)
+
+            generated = torch.cat([generated, next_token], dim=-1)
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones_like(next_token)], dim=-1
+            )
+
+            if next_token.item() == eos_token_id or (
+                generated.shape[1] >= input_ids.shape[1] + max_new_tokens
+            ):
+                break
+
+        if need_eval:
+            self.kv_quant.evaluate_metrics(past_key_values)
+
+        return generated
 
 
 # ---------------------------------------------------------------------------

@@ -208,7 +208,21 @@ def run_single(
     )
     text = processor.decode(generated[0], skip_special_tokens=True)
     k_mse, v_mse = compute_kv_mse(method, quantizer, past_kv)
-    return {"text": text, "k_mse": k_mse, "v_mse": v_mse}
+    return {"generated": generated, "text": text, "k_mse": k_mse, "v_mse": v_mse}
+
+
+@torch.no_grad()
+def generate_full_precision(
+    model,
+    processor,
+    raw_image,
+    prompt: str,
+    max_new_tokens: int,
+    device: str,
+) -> torch.Tensor:
+    """Full-precision (no KV quantization) greedy baseline via ``model.generate``."""
+    inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(device)
+    return model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
 
 
 def main() -> None:
@@ -218,6 +232,11 @@ def main() -> None:
     from llava_quant.llava_wa.config import CHECKPOINT
     from llava_quant.llava_wa.data import make_prompt
     from llava_quant.llava_wa.search import _release_cuda_memory
+    from llava_quant.llava_wa.utils import (
+        compute_kl_for_quantization,
+        compute_cos_similarity,
+        compute_pearson_correlation,
+    )
     from llava_quant.llava_wa_kv.sure_quant_kv_llava import LLaVAKVSureQuantizer
     from mme.llava_kv_quant_turbo import LLaVAKVOptimizedQuantizer
 
@@ -283,8 +302,19 @@ def main() -> None:
             args.max_new_tokens, device,
         )
         _release_cuda_memory()
+        fp_generated = generate_full_precision(
+            model, processor, raw_image, prompt, args.max_new_tokens, device,
+        )
+        fp_text = processor.decode(fp_generated[0], skip_special_tokens=True)
+        _release_cuda_memory()
 
-        results.append({"image": img_path, "turbo": turbo, "sure": sure})
+        results.append({
+            "image": img_path,
+            "turbo": turbo,
+            "sure": sure,
+            "fp_generated": fp_generated,
+            "fp_text": fp_text,
+        })
 
         print("\n" + "=" * 72)
         print(f"Image: {img_path}")
@@ -293,6 +323,7 @@ def main() -> None:
         # print(f"  {'turboquant':<14} {turbo['k_mse']:>14.8f} {turbo['v_mse']:>14.8f}")
         # print(f"  {'surequant':<14} {sure['k_mse']:>14.8f} {sure['v_mse']:>14.8f}")
         # print("-" * 72)
+        print(f"  [fullprec ] {fp_text}")
         print(f"  [turboquant] {turbo['text']}")
         print(f"  [surequant ] {sure['text']}")
 
@@ -311,6 +342,35 @@ def main() -> None:
     mean_sure_v = float(np.mean([r["sure"]["v_mse"] for r in results]))
     print(f"  {'MEAN':<34} {mean_turbo_k:>12.6f} {mean_turbo_v:>12.6f} "
           f"{mean_sure_k:>12.6f} {mean_sure_v:>12.6f}")
+
+    # --- Comparison vs full-precision baseline (generated[0] metrics). ---
+    print("\n" + "=" * 72)
+    print("vs full-precision baseline (generated[0])")
+    print("=" * 72)
+    print(f"  {'image':<16} {'method':<10} {'kl':>10} {'cos_sim':>10} {'pearson':>10}")
+    turbo_metrics = {"kl": [], "cos": [], "pcc": []}
+    sure_metrics = {"kl": [], "cos": [], "pcc": []}
+    for r in results:
+        fp_ids = r["fp_generated"][0]
+        for method, res, acc in (
+            ("turbo", r["turbo"], turbo_metrics),
+            ("sure", r["sure"], sure_metrics),
+        ):
+            q_ids = res["generated"][0]
+            kl = compute_kl_for_quantization(fp_ids, q_ids)
+            cos = compute_cos_similarity(fp_ids, q_ids)
+            pcc = compute_pearson_correlation(fp_ids, q_ids)
+            acc["kl"].append(kl)
+            acc["cos"].append(cos)
+            acc["pcc"].append(pcc)
+            print(f"  {Path(r['image']).name:<16} {method:<10} "
+                  f"{kl:>10.4f} {cos:>10.6f} {pcc:>10.6f}")
+    print("-" * 72)
+    for method, acc in (("turbo", turbo_metrics), ("sure", sure_metrics)):
+        print(f"  {'MEAN':<16} {method:<10} "
+              f"{np.mean(acc['kl']):>10.4f} "
+              f"{np.mean(acc['cos']):>10.6f} "
+              f"{np.mean(acc['pcc']):>10.6f}")
 
 
 if __name__ == "__main__":

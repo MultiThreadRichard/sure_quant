@@ -4,12 +4,18 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, confu
 from tqdm import tqdm
 import re
 
-
+"""
+修改以下路径，执行
+python calculation_mme.py
+"""
 
 # TO MOD
 # output_path = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res/metrics'
-output_path = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res/metrics'
+# output_path = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res/metrics'
 # output_path = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_sure_llm_w4a16_turbo_kv4/metrics'
+# output_path = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_llava_kv_only_surequant/metrics'
+output_path = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_llava_kv_only_turboquant/metrics'
+
 
 
 os.makedirs(output_path, exist_ok=True)
@@ -17,8 +23,10 @@ os.makedirs(output_path, exist_ok=True)
 out_file_name = 'metric_llava_test.txt'
 
 # src_partition_dir = '/home/ccwan/stu_Jiangtp/mme/mme_eval_res'
-src_partition_dir = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res'
+# src_partition_dir = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res'
 # src_partition_dir = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_sure_llm_w4a16_turbo_kv4'
+# src_partition_dir = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_llava_kv_only_surequant'
+src_partition_dir = '/home/ecnu01/workspace/sure_quant/logs/mme_eval_res_llava_kv_only_turboquant'
 
 
 os.makedirs(src_partition_dir, exist_ok=True)
