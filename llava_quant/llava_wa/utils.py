@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 
@@ -33,6 +35,33 @@ def compute_kl_for_quantization(
     kl = torch.sum(p * torch.log(p / q))
 
     return kl.item()
+
+
+def compute_step_kl(
+    fp_step_logits,
+    q_step_logits,
+) -> tuple[float, int]:
+    """逐 decode step 的 next-token 分布 KL(fp || q)，再对步数取平均。
+
+    Args:
+        fp_step_logits: 全精度模型每步的 logits，``[vocab]`` / ``[1, vocab]`` 的
+            列表（或直接是 ``[T, vocab]`` 张量，按行迭代）。
+        q_step_logits:  量化模型同一步的 logits，格式同上。
+
+    Returns:
+        ``(mean_kl, n_compared_steps)``。两边提前 EOS 时只比较都产生过的
+        ``min(len_fp, len_q)`` 步；无重叠步时返回 ``(nan, 0)``。
+    """
+    n = min(len(fp_step_logits), len(q_step_logits))
+    if n == 0:
+        return float("nan"), 0
+    kl_sum = 0.0
+    for i in range(n):
+        # log_target=True 且 input=q：sum(exp(p) * (p - q)) == KL(p || q)
+        fp_logp = F.log_softmax(fp_step_logits[i].float(), dim=-1)
+        q_logp = F.log_softmax(q_step_logits[i].float(), dim=-1)
+        kl_sum += F.kl_div(q_logp, fp_logp, reduction="sum", log_target=True).item()
+    return kl_sum / n, n
 
 
 def compute_cos_similarity(fp_weight: torch.Tensor, q_weight: torch.Tensor):
@@ -71,5 +100,119 @@ def compute_pearson_correlation(x: torch.Tensor, y: torch.Tensor):
     # 防止除 0
     eps = 1e-8
     pcc = numerator / (denominator + eps)
-    
+
     return pcc.item()
+
+
+# ---------------------------------------------------------------------------
+# vs full-precision baseline: shared greedy decode loop
+# ---------------------------------------------------------------------------
+# Every quantized-vs-full-precision experiment needs the two sides to run
+# through the *same* decoding path, otherwise the comparison mixes quantization
+# effects with decoding differences.  ``decode_greedy`` takes an optional
+# ``quantizer``; the full-precision baseline is simply the same call with
+# ``quantizer=None``.  Running one loop for both is also what makes the
+# per-step next-token logits available to ``compute_step_kl`` above.
+
+
+def _decode_with_native_update(quantizer, past_kv, seq_len_before: int):
+    """Call the method-specific decode quantizer (keeps the native cache in sync)."""
+    if hasattr(quantizer, "quantize_decode_with_native_update"):  # SureQuant
+        return quantizer.quantize_decode_with_native_update(past_kv, seq_len_before)
+    return quantizer.quantize_decode_with_native_kv_update(past_kv, seq_len_before)  # TurboQuant
+
+
+def _release_native_cache(*quantizers) -> None:
+    """Drop the quantizers' stashed native KV caches.
+
+    Both quantizers keep a full-precision copy of the cache for the MSE metric
+    (SureQuant as GPU tensors, TurboQuant as host numpy arrays).  For a 2k-token
+    sample that is ~1 GiB each, so it must not survive the sample that produced
+    it.  Safe to clear: both ``quantize_prefill`` implementations re-create it,
+    and the decode entry points only run after a prefill.
+    """
+    for quantizer in quantizers:
+        quantizer.native_past_kv = None
+
+
+@torch.no_grad()
+def decode_greedy(
+    model,
+    inputs,
+    max_new_tokens: int,
+    eos_token_id: int | None = None,
+    quantizer=None,
+) -> dict:
+    """Greedy prefill/decode loop, optionally quantizing the KV cache each step.
+
+    The full-precision baseline runs through this exact same loop with
+    ``quantizer=None``, so both sides share the decoding path and both expose the
+    per-step next-token logits required by the step-wise KL.  Quantized decode
+    steps use the native-updating variant so each quantizer retains a full native
+    cache for the MSE metric.
+
+    Mirrors ``sure_vs_turbo_kv_compare.generate_quantized_kv``/
+    ``LLaVAInferEngine.generate`` (DynamicCache + prefill/decode) but takes
+    pre-built processor inputs.
+
+    Args:
+        model: LLaVA model in eval mode.
+        inputs: processor outputs (``input_ids`` / ``attention_mask`` /
+            ``pixel_values``) on the model's device.
+        max_new_tokens: hard cap on decode steps; generation also stops early
+            as soon as ``eos_token_id`` is produced.
+        eos_token_id: stop token; ``None`` disables early stopping.
+        quantizer: KV-cache quantizer exposing ``quantize_prefill`` plus one of
+            the decode-update entry points, or ``None`` for full precision.
+
+    Returns:
+        ``{"generated": ids [1, T], "past_kv": final cache,
+           "step_logits": one float32 ``[1, vocab]`` CPU tensor per decode step}``.
+    """
+    from transformers import DynamicCache
+
+    input_ids = inputs["input_ids"]
+    attention_mask = inputs["attention_mask"]
+    pixel_values = inputs["pixel_values"]
+
+    past_kv = DynamicCache()
+    generated = input_ids
+    step_logits: list[torch.Tensor] = []
+
+    for step in range(max_new_tokens):
+        if step == 0:
+            outputs = model(
+                input_ids=generated,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                past_key_values=past_kv,
+                use_cache=True,
+            )
+            past_kv = outputs.past_key_values
+            if quantizer is not None:
+                past_kv = quantizer.quantize_prefill(past_kv)
+        else:
+            seq_len_before = generated.shape[1] - 1
+            outputs = model(
+                input_ids=generated[:, -1:],
+                attention_mask=attention_mask,
+                pixel_values=None,
+                past_key_values=past_kv,
+                use_cache=True,
+            )
+            past_kv = outputs.past_key_values
+            if quantizer is not None:
+                past_kv = _decode_with_native_update(quantizer, past_kv, seq_len_before)
+
+        next_logits = outputs.logits[:, -1, :]
+        next_token = next_logits.argmax(dim=-1, keepdim=True)
+        step_logits.append(next_logits.float().cpu())
+        generated = torch.cat([generated, next_token], dim=-1)
+        attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=-1)
+
+        del outputs
+
+        if eos_token_id is not None and next_token.item() == eos_token_id:
+            break
+
+    return {"generated": generated, "past_kv": past_kv, "step_logits": step_logits}
