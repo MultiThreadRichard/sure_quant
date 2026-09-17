@@ -1,40 +1,7 @@
 #!/usr/bin/env python3
 """Compare TurboQuant vs SureQuant KV-cache quantization on MM-NIAH (retrieval-text).
 
-Same protocol and same metrics as ``sure_vs_turbo_kv_compare.py``, but the
-samples come from MM-NIAH instead of ``sample_img/``:
-
-* data      — ``.../MM-NIAH/mm_niah_val/annotations/retrieval-text.jsonl``
-              (one JSON dict per line; ``images_list`` entries are relative and
-              get the MM-NIAH image root prepended)
-* prompt    — ``context + question + answer instruction`` rendered through the
-              LLaVA chat template; the ``<image>`` placeholders in ``context``
-              line up one-to-one with ``images_list``.
-* metrics   — K/V reconstruction MSE plus, against a full-precision baseline:
-              the mean per-step ``KL(fp || q)`` between next-token logit
-              distributions, and ``compute_cos_similarity`` /
-              ``compute_pearson_correlation`` over the *generated* token slice.
-              The NIAH answer hit rate (does the reference answer appear in the
-              newly generated assistant text) is reported as well.
-              The step-wise KL lives in ``llava_quant.llava_wa.utils``
-              (``compute_step_kl``) so other KV/weight comparisons can reuse it,
-              along with the shared greedy loop (``decode_greedy``) that produces
-              the step logits for both sides.
-
-The full-precision baseline is decoded by the very same prefill/decode loop as
-the quantized runs (``decode_greedy`` with ``quantizer=None``), which is what
-makes the per-step logits available.  Two consequences for the comparison with
-``sure_vs_turbo_kv_compare.py``:
-
-* ``compute_kl_for_quantization`` is NOT used here.  It histograms token ids —
-  nominal values — after flattening the entire sequence, so a ~2000-token
-  identical prompt swamps the handful of generated tokens and KL is pinned near
-  zero no matter what the quantization does.  ``utils.compute_step_kl`` replaces
-  it; ``compute_kl_for_quantization`` itself is left untouched.
-* cos/pcc are evaluated on ``generated[prompt_len:]`` rather than the whole
-  sequence, for the same dilution reason.
-
-Methods (unchanged from the image-prompt script)
+w16a16kv4
 ------------------------------------------------
 
 * **TurboQuant** — ``mme.llava_kv_quant_turbo.LLaVAKVOptimizedQuantizer``

@@ -145,15 +145,13 @@ def decode_greedy(
 ) -> dict:
     """Greedy prefill/decode loop, optionally quantizing the KV cache each step.
 
+    <for both original transformers model and quantized model>
+
     The full-precision baseline runs through this exact same loop with
     ``quantizer=None``, so both sides share the decoding path and both expose the
     per-step next-token logits required by the step-wise KL.  Quantized decode
     steps use the native-updating variant so each quantizer retains a full native
     cache for the MSE metric.
-
-    Mirrors ``sure_vs_turbo_kv_compare.generate_quantized_kv``/
-    ``LLaVAInferEngine.generate`` (DynamicCache + prefill/decode) but takes
-    pre-built processor inputs.
 
     Args:
         model: LLaVA model in eval mode.
@@ -216,3 +214,65 @@ def decode_greedy(
             break
 
     return {"generated": generated, "past_kv": past_kv, "step_logits": step_logits}
+
+
+@torch.no_grad()
+def generate_step_logits_for_original(
+    model,
+    inputs,
+    max_new_tokens: int,
+    eos_token_id: int | None = None,
+    **generate_kwargs,
+) -> dict:
+    """Per-step next-token logits from ``generate`` for original transformers model.
+
+    Same ``step_logits`` contract as ``decode_greedy`` above, but collected from
+    HuggingFace's generation loop instead of a hand-written one.  ``generate``
+    records the *raw* pre-softmax logits under ``output_logits=True``
+    (``GenerationMixin._sample`` keeps ``outputs.logits[:, -1, :].clone().float()``
+    separately from the post-``logits_processor`` ``output_scores``), so no
+    quantizer hook and no manual prefill/decode bookkeeping are needed here.
+
+    This is NOT interchangeable with ``decode_greedy`` for a quantized run: the
+    default path has nowhere to inject a KV-cache quantizer.  It exists for the
+    full-precision side and for callers that only want the logits.
+
+    Note: ``generate`` forces ``num_logits_to_keep=1``, so the LM head only sees
+    the last hidden state while ``decode_greedy`` computes logits for every
+    position and slices.  The two differ by ~1e-2 in fp16 -- same order as a
+    quantization effect -- so pick one capture path and use it for both sides of
+    a comparison.
+
+    Args:
+        model: LLaVA model in eval mode.
+        inputs: processor outputs (``input_ids`` / ``attention_mask`` /
+            ``pixel_values``) on the model's device.
+        max_new_tokens: hard cap on decode steps.
+        eos_token_id: forwarded to ``generate`` only when not ``None``; left
+            unset so the model's generation config decides, otherwise passing
+            ``None`` would disable early stopping.
+        **generate_kwargs: forwarded to ``generate``.  Must not activate a
+            ``logits_processor`` (``repetition_penalty`` / ``min_length`` /
+            ``suppress_tokens`` / ``renormalize_logits`` / warpers ...): those
+            rewrite the scores the sampler argmaxes over, so the tokens returned
+            in ``generated`` would no longer be the argmax of ``step_logits``.
+
+    Returns:
+        ``{"generated": ids [1, prompt_len + T],
+           "step_logits": one float32 ``[1, vocab]`` CPU tensor per decode step}``.
+    """
+    if eos_token_id is not None:
+        generate_kwargs["eos_token_id"] = eos_token_id
+
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        output_logits=True,
+        return_dict_in_generate=True,
+        **generate_kwargs,
+    )
+
+    return {
+        "generated": outputs.sequences,
+        "step_logits": [logits.float().cpu() for logits in outputs.logits],
+    }
