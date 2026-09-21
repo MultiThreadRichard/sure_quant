@@ -421,7 +421,7 @@ def main() -> None:
     # computed on the *generated* slice only (the identical prompt prefix would
     # otherwise dominate both).
     print("\n" + "=" * 72)
-    print("vs full-precision baseline (step-wise logits KL; cos/pcc on generated tokens)")
+    print("vs full-precision baseline")
     print("=" * 72)
     print(f"  {'id':<8} {'method':<10} {'kl':>10} {'cos_sim':>10} {'pearson':>10} "
           f"{'hit':>6} {'steps':>7}  (kl in nats/step)")
