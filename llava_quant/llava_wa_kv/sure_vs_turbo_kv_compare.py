@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """Compare TurboQuant vs SureQuant KV-cache quantization on LLaVA (KV-only).
 
+w16a16kv4
+
 For each sample image under ``sample_img/`` with the fixed prompt
 ``Please describe this image.``, run KV-cache quantization inference through two
-methods and compare:
-
-* ``k_mse`` / ``v_mse`` — reconstruction error of the quantized KV cache.
-* generated text — qualitative effect of the quantization on decoding.
-
-Methods
+methods and compare
 -------
 
 * **TurboQuant** — ``mme.llava_kv_quant_turbo.LLaVAKVOptimizedQuantizer``
@@ -40,6 +37,17 @@ if str(_REPO_ROOT) not in sys.path:
 
 import numpy as np
 import torch
+
+# Imported at module level (not inside ``main``): ``generate_full_precision``
+# below calls ``generate_step_logits_for_original``, and a function-local import
+# would leave it unbound in the module namespace.  ``llava_quant.llava_wa`` is a
+# plain package with no import-time side effects, so this is cheap.
+from llava_quant.llava_wa.utils import (
+    compute_cos_similarity,
+    compute_pearson_correlation,
+    compute_step_kl,
+    generate_step_logits_for_original,
+)
 
 _SAMPLE_DIR = _REPO_ROOT / "sample_img"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -108,7 +116,7 @@ def generate_quantized_kv(
     prompt: str,
     max_new_tokens: int,
     device: str,
-) -> tuple[torch.Tensor, object]:
+) -> tuple[torch.Tensor, object, list[torch.Tensor]]:
     """Greedy decode with the KV cache quantized after every step.
 
     Mirrors ``LLaVAInferEngine.generate`` (DynamicCache + prefill/decode) but is
@@ -116,8 +124,15 @@ def generate_quantized_kv(
     ``LLaVAKVSureQuantizer``.  Decode steps use the native-updating variant so
     each quantizer retains a full native cache for the MSE metric.
 
+    This loop stays hand-written (rather than calling ``generate``) because the
+    per-step quantizer call between the forward and the next decode step has no
+    hook in the HuggingFace generation loop.
+
     Returns:
-        ``(generated_ids, final_past_kv)``.
+        ``(generated_ids, final_past_kv, step_logits)`` where ``step_logits``
+        holds one float32 ``[1, vocab]`` CPU tensor per decode step, in the same
+        format ``utils.decode_greedy`` produces so ``compute_step_kl`` can take
+        it directly.
     """
     from transformers import DynamicCache
 
@@ -128,6 +143,7 @@ def generate_quantized_kv(
 
     past_kv = DynamicCache()
     generated = input_ids
+    step_logits: list[torch.Tensor] = []
     eos_token_id = processor.tokenizer.eos_token_id
 
     for step in range(max_new_tokens):
@@ -151,14 +167,18 @@ def generate_quantized_kv(
             )
             past_kv = _decode_with_native_update(quantizer, outputs.past_key_values, seq_len_before)
 
-        next_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        next_logits = outputs.logits[:, -1, :]
+        step_logits.append(next_logits.float().cpu())
+        next_token = next_logits.argmax(dim=-1, keepdim=True)
         generated = torch.cat([generated, next_token], dim=-1)
         attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=-1)
+
+        del outputs
 
         if next_token.item() == eos_token_id:
             break
 
-    return generated, past_kv
+    return generated, past_kv, step_logits
 
 
 def compute_kv_mse(method: str, quantizer, past_kv) -> tuple[float, float]:
@@ -203,12 +223,18 @@ def run_single(
     max_new_tokens: int,
     device: str,
 ) -> dict:
-    generated, past_kv = generate_quantized_kv(
+    generated, past_kv, step_logits = generate_quantized_kv(
         quantizer, model, processor, raw_image, prompt, max_new_tokens, device,
     )
     text = processor.decode(generated[0], skip_special_tokens=True)
     k_mse, v_mse = compute_kv_mse(method, quantizer, past_kv)
-    return {"generated": generated, "text": text, "k_mse": k_mse, "v_mse": v_mse}
+    return {
+        "generated": generated,
+        "text": text,
+        "k_mse": k_mse,
+        "v_mse": v_mse,
+        "step_logits": step_logits,
+    }
 
 
 @torch.no_grad()
@@ -219,10 +245,18 @@ def generate_full_precision(
     prompt: str,
     max_new_tokens: int,
     device: str,
-) -> torch.Tensor:
-    """Full-precision (no KV quantization) greedy baseline via ``model.generate``."""
+) -> dict:
+    """Full-precision (no KV quantization) greedy baseline via ``model.generate``.
+
+    Uses ``utils.generate_step_logits_for_original`` so the baseline exposes the
+    same per-step raw logits the quantized runs collect, which is what lets
+    ``compute_step_kl`` compare the two sides step by step.
+    """
     inputs = processor(images=raw_image, text=prompt, return_tensors="pt").to(device)
-    return model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+    return generate_step_logits_for_original(
+        model, inputs, max_new_tokens,
+        eos_token_id=processor.tokenizer.eos_token_id,
+    )
 
 
 def main() -> None:
@@ -232,11 +266,6 @@ def main() -> None:
     from llava_quant.llava_wa.config import CHECKPOINT
     from llava_quant.llava_wa.data import make_prompt
     from llava_quant.llava_wa.search import _release_cuda_memory
-    from llava_quant.llava_wa.utils import (
-        compute_kl_for_quantization,
-        compute_cos_similarity,
-        compute_pearson_correlation,
-    )
     from llava_quant.llava_wa_kv.sure_quant_kv_llava import LLaVAKVSureQuantizer
     from mme.llava_kv_quant_turbo import LLaVAKVOptimizedQuantizer
 
@@ -302,17 +331,17 @@ def main() -> None:
             args.max_new_tokens, device,
         )
         _release_cuda_memory()
-        fp_generated = generate_full_precision(
+        fp = generate_full_precision(
             model, processor, raw_image, prompt, args.max_new_tokens, device,
         )
-        fp_text = processor.decode(fp_generated[0], skip_special_tokens=True)
+        fp_text = processor.decode(fp["generated"][0], skip_special_tokens=True)
         _release_cuda_memory()
 
         results.append({
             "image": img_path,
             "turbo": turbo,
             "sure": sure,
-            "fp_generated": fp_generated,
+            "fp": fp,
             "fp_text": fp_text,
         })
 
@@ -343,32 +372,39 @@ def main() -> None:
     print(f"  {'MEAN':<34} {mean_turbo_k:>12.6f} {mean_turbo_v:>12.6f} "
           f"{mean_sure_k:>12.6f} {mean_sure_v:>12.6f}")
 
-    # --- Comparison vs full-precision baseline (generated[0] metrics). ---
+    # --- Comparison vs full-precision baseline. ---
+    # kl is the average over decode steps of KL(fp || q) between the two
+    # next-token distributions.  Both sides stop early on EOS, so only the
+    # overlapping steps count: min(len(fp step_logits), len(q step_logits)).
+    # cos/pcc stay on the generated token ids, which is a different (coarser)
+    # signal.
     print("\n" + "=" * 72)
-    print("vs full-precision baseline (generated[0])")
+    print("vs full-precision baseline")
     print("=" * 72)
-    print(f"  {'image':<16} {'method':<10} {'kl':>10} {'cos_sim':>10} {'pearson':>10}")
+    print(f"  {'image':<16} {'method':<10} {'kl':>12} "
+          f"{'cos_sim':>10} {'pearson':>10}")
     turbo_metrics = {"kl": [], "cos": [], "pcc": []}
     sure_metrics = {"kl": [], "cos": [], "pcc": []}
     for r in results:
-        fp_ids = r["fp_generated"][0]
+        fp_ids = r["fp"]["generated"][0]
+        fp_step_logits = r["fp"]["step_logits"]
         for method, res, acc in (
             ("turbo", r["turbo"], turbo_metrics),
             ("sure", r["sure"], sure_metrics),
         ):
             q_ids = res["generated"][0]
-            kl = compute_kl_for_quantization(fp_ids, q_ids)
+            kl, _ = compute_step_kl(fp_step_logits, res["step_logits"])
             cos = compute_cos_similarity(fp_ids, q_ids)
             pcc = compute_pearson_correlation(fp_ids, q_ids)
             acc["kl"].append(kl)
             acc["cos"].append(cos)
             acc["pcc"].append(pcc)
             print(f"  {Path(r['image']).name:<16} {method:<10} "
-                  f"{kl:>10.4f} {cos:>10.6f} {pcc:>10.6f}")
+                  f"{kl:>12.4e} {cos:>10.6f} {pcc:>10.6f}")
     print("-" * 72)
     for method, acc in (("turbo", turbo_metrics), ("sure", sure_metrics)):
         print(f"  {'MEAN':<16} {method:<10} "
-              f"{np.mean(acc['kl']):>10.4f} "
+              f"{np.mean(acc['kl']):>12.4e} "
               f"{np.mean(acc['cos']):>10.6f} "
               f"{np.mean(acc['pcc']):>10.6f}")
 
