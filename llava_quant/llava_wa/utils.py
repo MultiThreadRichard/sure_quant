@@ -64,6 +64,63 @@ def compute_step_kl(
     return kl_sum / n, n
 
 
+def compute_step_cos_pcc(
+    fp_step_logits,
+    q_step_logits,
+) -> tuple[float, float, int]:
+    """逐 decode step 的 next-token 分布 cos / PCC，再对步数取平均。
+
+    与 ``compute_step_kl`` 同一口径：只比较两边都产生过的
+    ``min(len_fp, len_q)`` 个 decode step，每步在 log-softmax 后的 vocab 分布上
+    算一个标量，最后对步数取平均。
+
+    注意这里比较的是 **logits（下一 token 分布）而不是生成的 token id**。id 是
+    词表里的任意索引，没有数值尺度，对它算 cos/PCC 不构成任何相似度含义；两条流
+    一分叉，id 序列更是取自不同的 context，样本一短（n=2 时 PCC 恒为 ±1）就会
+    吐出纯伪值。
+
+    Args:
+        fp_step_logits: 全精度模型每步的 logits，``[vocab]`` / ``[1, vocab]`` 的
+            列表（或直接是 ``[T, vocab]`` 张量，按行迭代）。
+        q_step_logits:  量化模型同一步的 logits，格式同上。
+
+    Returns:
+        ``(mean_cos, mean_pcc, n_compared_steps)``；无重叠步时返回
+        ``(nan, nan, 0)``。
+    """
+    n = min(len(fp_step_logits), len(q_step_logits))
+    if n == 0:
+        return float("nan"), float("nan"), 0
+    cos_sum = 0.0
+    pcc_sum = 0.0
+    for i in range(n):
+        # 与 compute_step_kl 一致的 log-softmax 变换。对 PCC 而言这只是整体平移，
+        # 结果不变；对 cos 则必须归到同一尺度，否则两个向量的公共大分量会把
+        # 相似度顶到 ~1，看不出权重量化误差。
+        fp_logp = F.log_softmax(fp_step_logits[i].float().flatten(), dim=-1)
+        q_logp = F.log_softmax(q_step_logits[i].float().flatten(), dim=-1)
+        cos_sum += F.cosine_similarity(fp_logp, q_logp, dim=0).item()
+        pcc_sum += _pearson_1d(fp_logp, q_logp)
+    return cos_sum / n, pcc_sum / n, n
+
+
+def _pearson_1d(x: torch.Tensor, y: torch.Tensor) -> float:
+    """等长一维张量的 PCC，范围 [-1, 1]。调用方保证已 flatten、同 device。"""
+    # 减去均值
+    x = x - x.mean()
+    y = y - y.mean()
+
+    # 计算分子（协方差部分）
+    numerator = (x * y).sum()
+
+    # 计算分母（标准差乘积）
+    denominator = torch.sqrt((x ** 2).sum()) * torch.sqrt((y ** 2).sum())
+
+    # 防止除 0
+    eps = 1e-8
+    return (numerator / (denominator + eps)).item()
+
+
 def compute_cos_similarity(fp_weight: torch.Tensor, q_weight: torch.Tensor):
     fp_weight = fp_weight.detach().cpu().flatten().float()
     q_weight = q_weight.detach().cpu().flatten().float()
@@ -84,24 +141,7 @@ def compute_pearson_correlation(x: torch.Tensor, y: torch.Tensor):
     y = y.detach().cpu().flatten().float()
 
     eval_len = min(len(x), len(y))
-    x = x[:eval_len]
-    y = y[:eval_len]
-
-    # 减去均值
-    x_mean = x - x.mean()
-    y_mean = y - y.mean()
-
-    # 计算分子（协方差部分）
-    numerator = (x_mean * y_mean).sum()
-    
-    # 计算分母（标准差乘积）
-    denominator = torch.sqrt(torch.sum(x_mean ** 2)) * torch.sqrt(torch.sum(y_mean ** 2))
-    
-    # 防止除 0
-    eps = 1e-8
-    pcc = numerator / (denominator + eps)
-
-    return pcc.item()
+    return _pearson_1d(x[:eval_len], y[:eval_len])
 
 
 # ---------------------------------------------------------------------------
